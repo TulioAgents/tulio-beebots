@@ -56,9 +56,18 @@ install: node
 	@cd dashboard && $(N) pnpm install
 
 dev: node ports
-	@echo "engine http://127.0.0.1:8080  |  dashboard http://localhost:5173  (Ctrl-C stops both)"
+	@echo "starting engine (it loads market data before it listens, ~15s)..."
 	@trap 'kill 0' EXIT INT TERM; \
-	$(MAKE) --no-print-directory engine & \
+	$(MAKE) --no-print-directory engine & epid=$$!; \
+	up=""; \
+	for i in $$(seq 1 120); do \
+	  if curl -s -o /dev/null --max-time 2 http://127.0.0.1:8080/health; then up=1; break; fi; \
+	  if ! kill -0 $$epid 2>/dev/null; then echo "engine exited before it came up - see its error above"; exit 1; fi; \
+	  sleep 0.5; \
+	done; \
+	if [ -z "$$up" ]; then echo "engine did not listen on :8080 within 60s"; exit 1; fi; \
+	echo ""; \
+	echo "engine up. dashboard -> http://localhost:5173  (Ctrl-C stops both)"; \
 	$(MAKE) --no-print-directory dashboard & \
 	wait
 
@@ -101,9 +110,18 @@ reset: stop
 # data/bees-demo.sqlite. Needs BEE1/2/3_OKX_DEMO_API_KEY, _SECRET and _PASSPHRASE in .env.
 # Check them first with `make keycheck`.
 demo: node ports
-	echo "engine MODE=demo http://127.0.0.1:8080  |  dashboard http://localhost:5173  (Ctrl-C stops both)"
-	trap 'kill 0' EXIT INT TERM; \
-	$(MAKE) --no-print-directory demo-engine & \
+	@echo "starting engine MODE=demo (real orders on OKX demo)..."
+	@trap 'kill 0' EXIT INT TERM; \
+	$(MAKE) --no-print-directory demo-engine & epid=$$!; \
+	up=""; \
+	for i in $$(seq 1 120); do \
+	  if curl -s -o /dev/null --max-time 2 http://127.0.0.1:8080/health; then up=1; break; fi; \
+	  if ! kill -0 $$epid 2>/dev/null; then echo "engine exited before it came up - run 'make keycheck'"; exit 1; fi; \
+	  sleep 0.5; \
+	done; \
+	if [ -z "$$up" ]; then echo "engine did not listen on :8080 within 60s"; exit 1; fi; \
+	echo ""; \
+	echo "engine up. dashboard -> http://localhost:5173  (Ctrl-C stops both)"; \
 	$(MAKE) --no-print-directory dashboard & \
 	wait
 
