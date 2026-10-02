@@ -7,6 +7,10 @@ Claude Opus 5.5 writes the rules.
 He is optional. Your bees trade the same without him. He works in paper trading (the default) exactly as he does
 with real money.
 
+[![Watch the video: the Beekeeper, built on Zapier](screenshots/beekeeper-video.jpg)](https://www.youtube.com/watch?v=cTUnM9trqfs)
+
+**Watch the video:** [youtube.com/watch?v=cTUnM9trqfs](https://www.youtube.com/watch?v=cTUnM9trqfs)
+
 ![The Beekeeper card](screenshots/beekeeper-card.jpg)
 
 ## What you need
