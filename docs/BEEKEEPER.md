@@ -22,8 +22,8 @@ with real money.
 
 1. **Copy the Zap.** Open [mrc.fm/beekeeper](https://mrc.fm/beekeeper) and copy the Zap into your Zapier account.
 2. **Connect Jev.** Open step 3 of the Zap. Connect TypeSafe Jev with your key.
-3. **Pick the diary table.** Steps 4, 7 and 9 write to a Zapier Table called "Beekeeper diary". Pick that table in
-   each of the three steps, or create it. If you do not want a diary, delete those three steps.
+3. **Keep or drop the diary.** The template makes a Zapier Table for you and points steps 4, 7 and 9 at it. Every
+   round is written there. If you do not want a diary, delete those three steps.
 4. **Publish, then copy the hook URL.** Publish the Zap. Open step 1 and copy the Catch Hook URL. Treat that URL
    like a password: anyone who has it can start your Zap.
 5. **Paste it into your dashboard.** Open your beebots dashboard. Find the Beekeeper card at the top of the right
@@ -32,7 +32,7 @@ with real money.
 That is all. Your dashboard sends its own address along, so you never type it. The first round starts about a minute
 later. After that he comes round every 4 hours.
 
-![The Zap, nine steps](screenshots/beekeeper-zap.jpg)
+<img src="screenshots/beekeeper-zap.jpg" alt="The Zap, nine steps" width="300">
 
 ![Connect the Beekeeper](screenshots/beekeeper-connect.jpg)
 

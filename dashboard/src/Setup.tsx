@@ -503,6 +503,13 @@ export function Setup() {
                 ? "Your bees join the Hive when the engine starts. You can leave any time from the dashboard."
                 : "Your bees stay off the Hive. You can join later from the dashboard."}
             </p>
+            <p className="dim small">
+              Optional, once you are trading: give your bees a coach. The <b>Beekeeper</b> card on your dashboard connects a Zap on Zapier that can rewrite a
+              losing bee's rules.{" "}
+              <a href="https://github.com/imikerussell/beebots/blob/main/docs/BEEKEEPER.md" target="_blank" rel="noopener">
+                How it works ↗
+              </a>
+            </p>
             <div className="setup-actions">
               <button className="ghost" onClick={() => setStep(5)}>
                 Back
