@@ -1,7 +1,7 @@
 {
   "name": "beebots-dashboard",
   "private": true,
-  "version": "2026.9.27",
+  "version": "2026.10.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
