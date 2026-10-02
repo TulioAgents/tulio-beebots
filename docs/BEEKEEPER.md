@@ -62,13 +62,14 @@ The Beekeeper also comes early when a bee is sent home for the day or retires. H
 
 | round | tasks | why |
 |---|---|---|
-| A quiet round (nothing rewritten) | about 2 | The scorecard Code step and the Jev step. |
-| A round with a rewrite | 7 | Measured on a real run. Most of it is Opus 5.5, a Premium model at 5 tasks. |
+| A quiet round (nothing rewritten) | 2 | The scorecard Code step and the Jev step. |
+| A round with a rewrite | 8 | The 2 above, plus Opus 5.5 (a Premium model) and the delivery Code step. |
 
-The trigger, the Filter step and the three Tables steps are free.
+Both numbers are what Zapier billed on real runs. The trigger, the Filter step and the three Tables steps are free.
 
-At one round every 4 hours, a quiet day is about 12 tasks. Each rewrite adds about 5. A round where every bee is
-locked costs nothing: your beebots does not call the Zap at all.
+At one round every 4 hours, a quiet day is 12 tasks. Each rewrite adds 6. A round where every bee is locked costs
+nothing: your beebots does not call the Zap at all. Three bees can each be rewritten once a day at most, so the
+ceiling is about 30 tasks a day.
 
 To change how often he comes round, set `BEEKEEPER_EVERY_HOURS` (see [`.env.example`](../.env.example)).
 
