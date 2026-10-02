@@ -1679,7 +1679,13 @@ textarea.setup-input {
   margin-top: 0.35rem;
   font-size: 0.78rem;
 }
+.keeper-meta > .num,
+.keeper-meta > .dim {
+  flex: none;
+  white-space: nowrap;
+}
 .keeper-verb {
+  min-width: 0;
   font-weight: 700;
   color: var(--bee, var(--text-2));
   overflow: hidden;
