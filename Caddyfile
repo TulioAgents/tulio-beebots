@@ -5,7 +5,7 @@
 	# Read-only engine endpoints. Only GET is proxied; the engine refuses everything else too.
 	@api {
 		method GET
-		path /events /snapshot /history /equity /visit /health /profile /bee-image/* /setup/status /hive/status
+		path /events /snapshot /history /equity /visit /health /profile /bee-image/* /setup/status /hive/status /keeper/scorecard
 	}
 	handle @api {
 		reverse_proxy engine:8080 {
@@ -35,6 +35,20 @@
 		path /hive/join /hive/leave
 	}
 	handle @hive {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy engine:8080
+	}
+
+	# The Beekeeper (docs/BEEKEEPER.md). /keeper/* are the owner's controls: the engine needs the owner password for
+	# each. /lab/* is where the Zap delivers a rewrite: the engine needs a 15-minute round key, and only accepts a
+	# bee's rules text and coin list.
+	@keeper {
+		method POST
+		path /keeper/* /lab/*
+	}
+	handle @keeper {
 		request_body {
 			max_size 16KB
 		}

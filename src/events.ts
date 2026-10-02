@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 import { redact } from "./redact.js";
 
-export type EventType = "decision" | "order" | "fill" | "funding" | "equity" | "cap" | "recon" | "heartbeat" | "status";
+export type EventType = "decision" | "order" | "fill" | "funding" | "equity" | "cap" | "recon" | "heartbeat" | "status" | "keeper";
 
 export interface BeeEvent {
   type: EventType;
