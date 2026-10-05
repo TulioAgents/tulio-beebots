@@ -10,7 +10,7 @@
 
 ## Unit 0: Testable wiring
 
-- [ ] 0.1 Move record-building and the failure alert into coach.ts (est: ~25m) (mutex: round-record)
+- [x] 0.1 Move record-building and the failure alert into coach.ts (est: ~25m) (mutex: round-record)
   - why: `src/tools/beekeep.ts` is a bare top-level ESM script imported by nothing, so the record append
     (`:143`), the alert (`:157-163`) and the pre-flight `die()` paths cannot be asserted on. Every story
     below needs to prove behaviour that currently lives only in that file. Extracting the pure parts into
@@ -21,7 +21,7 @@
     consecutive-failure check become importable pure functions.
   - verify: `test/beekeep.test.ts` exists and imports from `src/coach.js`; `pnpm typecheck` clean;
     `pnpm vitest run` still green with no change to `test/coach.test.ts` (540 → 549).
-  - landed:
+  - landed: af2fbae — src/coach.ts, src/tools/beekeep.ts, test/beekeep.test.ts
 
 ## Unit 4: Writing new rules
 
@@ -41,7 +41,7 @@
 
 ## Unit 9: Auditability liveness
 
-- [ ] 9.1 Record the trigger and every answer Jev gave (deps: 0.1, est: ~30m) (mutex: round-record)
+- [x] 9.1 Record the trigger and every answer Jev gave (deps: 0.1, est: ~30m) (mutex: round-record)
   - why: `Outcome` (`src/coach.ts:76-84`) carries no verdict fields, so the record built at
     `src/tools/beekeep.ts:143` never writes `broken`, `brokenConfidence`, `beeConfidence`, `anger` or
     `angerConfidence`. R-3.7 names the broken answer specifically, and it is the one answer that gates
@@ -53,9 +53,9 @@
   - verify: a test asserts the record of a quiet round and of a delivered round each carry all five verdict
     fields plus a trigger; a test asserts `broken: "no"` still reaches the CLI (it must not become a gate);
     R-9.5 holds — assert no record contains `LAB_SECRET` or an `x-lab-sig` value.
-  - landed:
+  - landed: 630be16 — src/coach.ts, src/tools/beekeep.ts, test/beekeep.test.ts, test/coach.test.ts, beekeeper/LOCAL.md
 
-- [ ] 9.2 Record the ruleset version replaced and the one installed or withheld (deps: 7.1, 9.1, est: ~25m) (mutex: round-record)
+- [x] 9.2 Record the ruleset version replaced and the one installed or withheld (deps: 7.1, 9.1, est: ~25m) (mutex: round-record)
   - why: `grep ruleset src/coach.ts src/tools/beekeep.ts` returns nothing. A delivered round records only
     `overlayId`; a withheld round records no version at all. The withheld arm is the comparison baseline the
     whole three-month programme rests on, and the ruleset version is its join key against the `decisions`
@@ -68,7 +68,7 @@
     against the real door asserts the version a delivered round recorded equals the `rules_version` the
     engine then stamps on that bee's next decision row. R-7.2/R-7.6 still hold — the preview is called before
     `pickArm`, so a test asserts both arms make the identical preview call.
-  - landed:
+  - landed: 9eb643c — src/coach.ts, test/coach.test.ts, test/beekeep.test.ts, test/keeper-http.test.ts, beekeeper/LOCAL.md
 
 - [ ] 9.3 Alert on consecutive rounds that could not run, including pre-flight failures (deps: 1.1, est: ~20m) (mutex: round-record)
   - why: the alert at `src/tools/beekeep.ts:157-163` counts `kind === "failed"` lines in the record file. The
@@ -103,7 +103,7 @@
 
 ## Unit 7: Control arm
 
-- [ ] 7.1 Expose a read-only ruleset-version preview from the engine (est: ~35m) (mutex: engine-hash)
+- [x] 7.1 Expose a read-only ruleset-version preview from the engine (est: ~35m) (mutex: engine-hash)
   - why: the version is the first 16 hex of sha256 over the composed `brain.strategy` (`src/engine.ts:44`), a
     string the coach never sees — it is built from the style's base strategy compiled into `src/bees/*`,
     which the LLD puts out of scope for the coach to know. `liveRules` (`src/lab/brain.ts:36`) and
@@ -117,7 +117,9 @@
   - verify: a test asserts preview output equals the `rules_version` the engine writes after the same rules
     land for real; a test asserts calling the preview leaves `rulesets`, `decisions` and the bee's live rules
     unchanged, and does not perturb the WeakMap cache; `pnpm vitest run test/keeper-http.test.ts` passes.
-  - landed:
+  - landed: 8724102 — src/lab/brain.ts, src/engine.ts, src/keeper-http.ts, src/index.ts, src/server.ts, test/keeper-http.test.ts, Caddyfile
+  - note: the Caddy `@keeper` matcher was narrowed from `POST /keeper/*` to the four owner paths. The route
+    answers before the password gate, so the wildcard would have published it. The coach asks over loopback.
 
 ## Not in this plan
 
