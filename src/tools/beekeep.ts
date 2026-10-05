@@ -11,7 +11,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { CoachConfig, runRound, type Scorecard, type Verdict, type WrittenRules } from "../coach.js";
+import { CoachConfig, roundRecord, runRound, shouldAlertOnFailures, type Scorecard, type Verdict, type WrittenRules } from "../coach.js";
 import { redact, safeError } from "../redact.js";
 
 const argv = process.argv.slice(2);
@@ -140,7 +140,7 @@ const outcome = await runRound({
 });
 
 // ---- record it, secrets and signatures excluded by construction ----
-const record = { at: startedAt, config: configPath, cli: cfg.cli, model: cfg.model, control: cfg.controlArm, ...outcome };
+const record = roundRecord(startedAt, configPath, cfg, outcome);
 try {
   appendFileSync(cfg.recordFile, `${JSON.stringify(record)}\n`);
 } catch (err) {
@@ -154,10 +154,9 @@ else if (outcome.kind === "quiet") console.log(`left them alone: ${outcome.reaso
 else console.error(`could not run: ${outcome.reason}`);
 
 if (outcome.kind === "failed") {
-  const recent = existsSync(cfg.recordFile)
-    ? readFileSync(cfg.recordFile, "utf8").trim().split("\n").slice(-cfg.alertAfterFailures)
-    : [];
-  const allFailed = recent.length >= cfg.alertAfterFailures && recent.every((l) => (JSON.parse(l) as { kind: string }).kind === "failed");
-  if (allFailed) console.error(`ALERT: the last ${cfg.alertAfterFailures} rounds could not run. The Beekeeper is not coaching.`);
+  const lines = existsSync(cfg.recordFile) ? readFileSync(cfg.recordFile, "utf8").trim().split("\n") : [];
+  if (shouldAlertOnFailures(lines, cfg.alertAfterFailures)) {
+    console.error(`ALERT: the last ${cfg.alertAfterFailures} rounds could not run. The Beekeeper is not coaching.`);
+  }
   process.exit(1);
 }

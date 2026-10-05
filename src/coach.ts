@@ -254,3 +254,38 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
     return { kind: "failed", reason: `could not reach the door: ${(err as Error).message}` };
   }
 }
+
+// ---------- what the round leaves behind ----------
+
+/** One line of the record file. Nothing here holds the secret or a signature, so R-9.5 holds by construction. */
+export type RoundRecord = {
+  at: string;
+  config: string;
+  cli: string;
+  model: string;
+  control: boolean;
+} & Outcome;
+
+/**
+ * The line a round appends. Pure and separate from the append itself, because the record is the only
+ * evidence a round ever ran and its shape has to be assertable without a filesystem.
+ */
+export function roundRecord(at: string, configPath: string, cfg: CoachConfig, outcome: Outcome): RoundRecord {
+  return { at, config: configPath, cli: cfg.cli, model: cfg.model, control: cfg.controlArm, ...outcome };
+}
+
+/**
+ * Whether the last `alertAfterFailures` rounds all failed, given the record file's lines. Total by design:
+ * a round killed mid-append leaves half a line behind, and that must not be what silences the alert.
+ */
+export function shouldAlertOnFailures(lines: readonly string[], alertAfterFailures: number): boolean {
+  const recent = lines.slice(-alertAfterFailures);
+  if (recent.length < alertAfterFailures) return false;
+  return recent.every((l) => {
+    try {
+      return (JSON.parse(l) as { kind?: unknown }).kind === "failed";
+    } catch {
+      return false;
+    }
+  });
+}
