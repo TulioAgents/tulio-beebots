@@ -25,7 +25,7 @@
 
 ## Unit 4: Writing new rules
 
-- [ ] 4.1 Reject a CLI response missing any of the six required fields (est: ~25m)
+- [x] 4.1 Reject a CLI response missing any of the six required fields (est: ~25m)
   - why: `src/tools/beekeep.ts:121` validates only `rules` and `reason`. A response missing `coins` reaches
     `tidyCoins`, whose `raw.split` (`src/coach.ts:107`) throws a TypeError from `buildPayload` — called
     outside any try at `src/coach.ts:227` — so the process dies on an unhandled rejection with no record and
@@ -37,7 +37,7 @@
   - verify: a test per missing field asserts `kind: "failed"` with a reason naming the field, and asserts the
     door received no request. No input reaches `tidyCoins` as `undefined`, and no payload field ever holds
     the string `"undefined"`.
-  - landed:
+  - landed: 6cb5391 — src/coach.ts, src/tools/beekeep.ts, test/coach.test.ts, test/beekeep.test.ts
 
 ## Unit 9: Auditability liveness
 
@@ -86,7 +86,7 @@
 ## Unit 1: Round execution
 
 - [ ] 1.1 Record a round that ends before the round loop starts (deps: 0.1, 9.1, est: ~25m) (mutex: round-record)
-  - why: five `die()` paths (`src/tools/beekeep.ts:31,33,37,39,40`) end a round with stderr and an exit code
+  - why: five `die()` paths (`src/tools/beekeep.ts:33,35,39,41,42`) end a round with stderr and an exit code
     only — invalid config, `LAB_SECRET` missing or short, `TYPESAFE_API_KEY` missing, prompt file missing.
     R-1.4 says "for any reason", and R-1.5's distinction between a round that chose to do nothing and one
     that could not run is unusable if the second kind is sometimes invisible. A missing config file is the
