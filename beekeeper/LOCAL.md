@@ -52,8 +52,12 @@ Keep no secrets in it. `LAB_SECRET` and `TYPESAFE_API_KEY` come from the environ
 The engine's own Beekeeper cadence defaults to every 4 hours, so match it:
 
 ```cron
-0 */4 * * * cd /path/to/tulio-beebots && /usr/bin/make beekeep >> /path/to/beekeep.log 2>&1
+0 */4 * * * cd /path/to/tulio-beebots && /usr/bin/make beekeep ARGS="--trigger cron" >> /path/to/beekeep.log 2>&1
 ```
+
+`--trigger cron` (or `COACH_TRIGGER=cron`) is what lets a later read tell scheduled rounds from the ones you
+ran by hand while debugging. Without it the round records `trigger: "manual"`, which is what `make beekeep`
+on its own honestly is.
 
 Exit codes are meaningful: **0** means the round reached a decision (delivered, withheld, or deliberately
 left them alone). **1** means it could not run. A coach that dies quietly looks exactly like a coach with

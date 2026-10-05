@@ -73,15 +73,28 @@ export interface WrittenRules {
 
 export type Arm = "delivered" | "withheld";
 
+/** How the round was launched. Not knowable inside the round: whatever started the process supplies it. */
+export const TRIGGERS = ["cron", "manual"] as const;
+export type Trigger = (typeof TRIGGERS)[number];
+
+/**
+ * Anything unrecognised reads as "manual", which is the honest answer: a value typed at a shell came from a
+ * person. A typo must never be recorded as "cron", because that is the claim a later read actually leans on.
+ */
+export const asTrigger = (raw: string | undefined): Trigger => (TRIGGERS.includes(raw as Trigger) ? (raw as Trigger) : "manual");
+
+// Every variant carries the verdict, because `broken` gates nothing (R-3.7) and so exists only in the
+// record. `null` means the round ended before Jev was asked: an absent answer and a low-confidence answer
+// are different facts, so no verdict is ever invented for those rounds.
 export type Outcome =
   /** A rewrite reached the door. */
-  | { kind: "delivered"; bee: string; arm: Arm; overlayId: number | null; status: number; rules: WrittenRules }
+  | { kind: "delivered"; verdict: Verdict; bee: string; arm: Arm; overlayId: number | null; status: number; rules: WrittenRules }
   /** A rewrite was produced and deliberately not sent: the control arm. */
-  | { kind: "withheld"; bee: string; arm: Arm; rules: WrittenRules }
+  | { kind: "withheld"; verdict: Verdict; bee: string; arm: Arm; rules: WrittenRules }
   /** The round ran and chose to change nothing. */
-  | { kind: "quiet"; reason: string }
+  | { kind: "quiet"; verdict: Verdict | null; reason: string }
   /** The round could not run. Never to be confused with "quiet". */
-  | { kind: "failed"; reason: string };
+  | { kind: "failed"; verdict: Verdict | null; reason: string };
 
 // ---------- pure helpers ----------
 
@@ -196,40 +209,41 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
   let card: Scorecard;
   try {
     const r = await d.fetch(`${base}/keeper/scorecard`, { signal: AbortSignal.timeout(15_000) });
-    if (!r.ok) return { kind: "failed", reason: `scorecard answered ${r.status}` };
+    if (!r.ok) return { kind: "failed", verdict: null, reason: `scorecard answered ${r.status}` };
     card = (await r.json()) as Scorecard;
-    if (typeof card.scorecard !== "string" || typeof card.open_bees !== "string") return { kind: "failed", reason: "scorecard is not the shape this expects" };
+    if (typeof card.scorecard !== "string" || typeof card.open_bees !== "string") return { kind: "failed", verdict: null, reason: "scorecard is not the shape this expects" };
   } catch (err) {
-    return { kind: "failed", reason: `could not read the scorecard: ${(err as Error).message}` };
+    return { kind: "failed", verdict: null, reason: `could not read the scorecard: ${(err as Error).message}` };
   }
 
   const open = openBees(card);
-  if (!open.length) return { kind: "quiet", reason: "no bee is open for a rewrite" };
+  if (!open.length) return { kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" };
 
   let verdict: Verdict;
   try {
     verdict = await d.ask(card, d.cfg.confidenceFloor);
   } catch (err) {
-    return { kind: "failed", reason: `Jev could not be asked: ${(err as Error).message}` };
+    return { kind: "failed", verdict: null, reason: `Jev could not be asked: ${(err as Error).message}` };
   }
 
-  if (verdict.bee === "unsure") return { kind: "quiet", reason: `Jev was not confident enough to name a bee (${verdict.beeConfidence.toFixed(2)})` };
-  if (verdict.bee === "none") return { kind: "quiet", reason: "Jev says leave all three alone" };
-  if (!open.includes(verdict.bee)) return { kind: "quiet", reason: `Jev picked ${verdict.bee}, which the scorecard does not list as open` };
+  // `broken` is read nowhere below this line: it is recorded and never acted on (R-3.7).
+  if (verdict.bee === "unsure") return { kind: "quiet", verdict, reason: `Jev was not confident enough to name a bee (${verdict.beeConfidence.toFixed(2)})` };
+  if (verdict.bee === "none") return { kind: "quiet", verdict, reason: "Jev says leave all three alone" };
+  if (!open.includes(verdict.bee)) return { kind: "quiet", verdict, reason: `Jev picked ${verdict.bee}, which the scorecard does not list as open` };
 
   let written: WrittenRules;
   try {
     written = await d.write(renderPrompt(d.template, card, verdict.bee, verdict.anger));
   } catch (err) {
-    return { kind: "failed", reason: `the rules-writing CLI failed: ${(err as Error).message}` };
+    return { kind: "failed", verdict, reason: `the rules-writing CLI failed: ${(err as Error).message}` };
   }
 
   const built = buildPayload(verdict.bee, verdict.anger, written, tradeableCoins(card), d.survivesRedact);
-  if (!built.ok) return { kind: "failed", reason: built.reason };
+  if (!built.ok) return { kind: "failed", verdict, reason: built.reason };
 
   // Only now does the arm get decided, so both arms were selected and cleaned identically.
   const arm = pickArm(d.cfg.controlArm, d.coin);
-  if (arm === "withheld") return { kind: "withheld", bee: verdict.bee, arm, rules: written };
+  if (arm === "withheld") return { kind: "withheld", verdict, bee: verdict.bee, arm, rules: written };
 
   const body = JSON.stringify(built.payload);
   const ts = String(d.now());
@@ -248,10 +262,10 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
     } catch {
       overlayId = null;
     }
-    if (!r.ok) return { kind: "failed", reason: `the door refused the rewrite: ${r.status} ${text}` };
-    return { kind: "delivered", bee: verdict.bee, arm, overlayId, status: r.status, rules: written };
+    if (!r.ok) return { kind: "failed", verdict, reason: `the door refused the rewrite: ${r.status} ${text}` };
+    return { kind: "delivered", verdict, bee: verdict.bee, arm, overlayId, status: r.status, rules: written };
   } catch (err) {
-    return { kind: "failed", reason: `could not reach the door: ${(err as Error).message}` };
+    return { kind: "failed", verdict, reason: `could not reach the door: ${(err as Error).message}` };
   }
 }
 
@@ -260,6 +274,8 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
 /** One line of the record file. Nothing here holds the secret or a signature, so R-9.5 holds by construction. */
 export type RoundRecord = {
   at: string;
+  /** Without this a cron tick and a hand-run round are indistinguishable afterwards (R-9.1). */
+  trigger: Trigger;
   config: string;
   cli: string;
   model: string;
@@ -270,8 +286,8 @@ export type RoundRecord = {
  * The line a round appends. Pure and separate from the append itself, because the record is the only
  * evidence a round ever ran and its shape has to be assertable without a filesystem.
  */
-export function roundRecord(at: string, configPath: string, cfg: CoachConfig, outcome: Outcome): RoundRecord {
-  return { at, config: configPath, cli: cfg.cli, model: cfg.model, control: cfg.controlArm, ...outcome };
+export function roundRecord(at: string, trigger: Trigger, configPath: string, cfg: CoachConfig, outcome: Outcome): RoundRecord {
+  return { at, trigger, config: configPath, cli: cfg.cli, model: cfg.model, control: cfg.controlArm, ...outcome };
 }
 
 /**

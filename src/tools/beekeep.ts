@@ -2,6 +2,8 @@
 //   make replay-probe        -- unrelated; this is:
 //   make beekeep             or  pnpm beekeep -- --config beekeeper/coach.json
 //
+// Pass --trigger cron (or COACH_TRIGGER=cron) from the crontab; a hand-run round records "manual".
+//
 // Needs LAB_SECRET (>=32 chars) and TYPESAFE_API_KEY. Spends a little Jev credit (three questions) and
 // whatever the local CLI costs. Exit 0 = the round reached a decision; exit 1 = the round could not run.
 // That distinction matters: a coach that dies quietly looks exactly like a coach with nothing to say.
@@ -11,7 +13,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { CoachConfig, roundRecord, runRound, shouldAlertOnFailures, type Scorecard, type Verdict, type WrittenRules } from "../coach.js";
+import { asTrigger, CoachConfig, roundRecord, runRound, shouldAlertOnFailures, type Scorecard, type Verdict, type WrittenRules } from "../coach.js";
 import { redact, safeError } from "../redact.js";
 
 const argv = process.argv.slice(2);
@@ -32,6 +34,10 @@ if (!existsSync(configPath)) die(`no config at ${configPath}. Copy beekeeper/coa
 const parsed = CoachConfig.safeParse(JSON.parse(readFileSync(configPath, "utf8")));
 if (!parsed.success) die(`${configPath} is not valid:\n  ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("\n  ")}`);
 const cfg = parsed.data;
+
+// How this process was started. The round itself cannot know it, so it is sourced here and recorded as
+// metadata: cron ticks are the rounds the experiment rests on, hand-run ones are the ones being debugged.
+const trigger = asTrigger(flag("trigger") ?? process.env.COACH_TRIGGER);
 
 const labSecret = process.env.LAB_SECRET ?? "";
 if (labSecret.length < 32) die("LAB_SECRET must be set and at least 32 characters. Without it the engine's door cannot be opened.");
@@ -140,7 +146,7 @@ const outcome = await runRound({
 });
 
 // ---- record it, secrets and signatures excluded by construction ----
-const record = roundRecord(startedAt, configPath, cfg, outcome);
+const record = roundRecord(startedAt, trigger, configPath, cfg, outcome);
 try {
   appendFileSync(cfg.recordFile, `${JSON.stringify(record)}\n`);
 } catch (err) {

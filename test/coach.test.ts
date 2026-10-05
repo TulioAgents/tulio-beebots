@@ -270,6 +270,44 @@ describe("coach: quiet rounds never call the rules-writing model", () => {
   });
 });
 
+describe("coach: the answers the round carries out with it", () => {
+  it("hands back all three answers and their confidences, delivered or quiet (R-9.1)", async () => {
+    const v = verdict({ broken: "no", brokenConfidence: 0.77, anger: "5", angerConfidence: 0.66 });
+    const delivered = await runRound(deps({ ask: async () => v }));
+    expect(delivered.kind).toBe("delivered");
+    expect(delivered.verdict).toEqual(v);
+
+    const q = verdict({ bee: "none", broken: "unsure", brokenConfidence: 0.51 });
+    const quiet = await runRound(deps({ ask: async () => q, write: () => Promise.reject(new Error("the model must not be called")) }));
+    expect(quiet.kind).toBe("quiet");
+    expect(quiet.verdict).toEqual(q);
+  });
+
+  it("reports no verdict rather than a made-up one when Jev was never asked", async () => {
+    const noBees = await runRound(deps({ fetch: (async () => new Response(JSON.stringify(card({ open_bees: "" })), { status: 200 })) as unknown as typeof globalThis.fetch }));
+    expect(noBees.kind).toBe("quiet");
+    expect(noBees.verdict).toBeNull();
+
+    const noCard = await runRound(deps({ fetch: (async () => new Response("nope", { status: 503 })) as unknown as typeof globalThis.fetch }));
+    expect(noCard.verdict).toBeNull();
+
+    const notAsked = await runRound(deps({ ask: () => Promise.reject(new Error("Jev timed out")) }));
+    expect(notAsked.kind).toBe("failed");
+    expect(notAsked.verdict).toBeNull();
+  });
+
+  it("records the broken answer without letting it gate the round (R-3.7)", async () => {
+    // the point of recording it is that nothing reads it: "no" and "unsure" must reach the CLI unchanged
+    for (const broken of ["no", "unsure", "yes"] as const) {
+      const prompts: string[] = [];
+      const out = await runRound(deps({ ask: async () => verdict({ broken, brokenConfidence: 0.5 }), write: async (p) => (prompts.push(p), written()) }));
+      expect(prompts.length).toBe(1);
+      expect(out.kind).toBe("delivered");
+      expect(out.verdict?.broken).toBe(broken);
+    }
+  });
+});
+
 describe("coach: the real door accepts what the coach sends", () => {
   const SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
 

@@ -3,7 +3,7 @@
 // inside src/tools/beekeep.ts where nothing can reach them.
 // See docs/ears/local-beekeeper.md units 1 and 9.
 import { describe, expect, it } from "vitest";
-import { roundRecord, shouldAlertOnFailures, type CoachConfig, type Outcome, type WrittenRules } from "../src/coach.js";
+import { asTrigger, roundRecord, shouldAlertOnFailures, type CoachConfig, type Outcome, type Verdict, type WrittenRules } from "../src/coach.js";
 
 // The real thing is 48 hex characters, which is also exactly what the redactor reads as a secret.
 const LAB_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -33,19 +33,31 @@ const written = (over: Partial<WrittenRules> = {}): WrittenRules => ({
   ...over,
 });
 
+const verdict = (over: Partial<Verdict> = {}): Verdict => ({
+  broken: "yes",
+  brokenConfidence: 0.91,
+  bee: "bee1",
+  beeConfidence: 0.84,
+  anger: "4",
+  angerConfidence: 0.72,
+  ...over,
+});
+
 /** One record-file line, as the tool would have appended it. */
-const line = (outcome: Outcome): string => JSON.stringify(roundRecord(AT, CONFIG, cfg(), outcome));
+const line = (outcome: Outcome): string => JSON.stringify(roundRecord(AT, "cron", CONFIG, cfg(), outcome));
 
 describe("beekeep: the round record", () => {
   it("carries the round's own metadata alongside everything a delivered outcome knows", () => {
-    const r = roundRecord(AT, CONFIG, cfg(), { kind: "delivered", bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() });
+    const r = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() });
     expect(r).toEqual({
       at: AT,
+      trigger: "cron",
       config: CONFIG,
       cli: "claude",
       model: "test-model",
       control: true,
       kind: "delivered",
+      verdict: verdict(),
       bee: "bee1",
       arm: "delivered",
       overlayId: 42,
@@ -55,32 +67,67 @@ describe("beekeep: the round record", () => {
   });
 
   it("keeps the full rules of a withheld round, which is the arm the comparison rests on", () => {
-    const r = roundRecord(AT, CONFIG, cfg(), { kind: "withheld", bee: "bee3", arm: "withheld", rules: written() });
-    expect(r).toEqual({ at: AT, config: CONFIG, cli: "claude", model: "test-model", control: true, kind: "withheld", bee: "bee3", arm: "withheld", rules: written() });
+    const r = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "withheld", verdict: verdict({ bee: "bee3" }), bee: "bee3", arm: "withheld", rules: written() });
+    expect(r).toEqual({
+      at: AT,
+      trigger: "cron",
+      config: CONFIG,
+      cli: "claude",
+      model: "test-model",
+      control: true,
+      kind: "withheld",
+      verdict: verdict({ bee: "bee3" }),
+      bee: "bee3",
+      arm: "withheld",
+      rules: written(),
+    });
   });
 
   it("tells a round that chose to do nothing apart from a round that could not run", () => {
-    const quiet = roundRecord(AT, CONFIG, cfg(), { kind: "quiet", reason: "Jev says leave all three alone" });
-    const failed = roundRecord(AT, CONFIG, cfg(), { kind: "failed", reason: "scorecard answered 503" });
-    expect(quiet).toEqual({ at: AT, config: CONFIG, cli: "claude", model: "test-model", control: true, kind: "quiet", reason: "Jev says leave all three alone" });
-    expect(failed).toEqual({ at: AT, config: CONFIG, cli: "claude", model: "test-model", control: true, kind: "failed", reason: "scorecard answered 503" });
+    const quiet = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "quiet", verdict: verdict({ bee: "none" }), reason: "Jev says leave all three alone" });
+    const failed = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "failed", verdict: null, reason: "scorecard answered 503" });
+    expect(quiet).toEqual({ at: AT, trigger: "cron", config: CONFIG, cli: "claude", model: "test-model", control: true, kind: "quiet", verdict: verdict({ bee: "none" }), reason: "Jev says leave all three alone" });
+    expect(failed).toEqual({ at: AT, trigger: "cron", config: CONFIG, cli: "claude", model: "test-model", control: true, kind: "failed", verdict: null, reason: "scorecard answered 503" });
     expect(quiet.kind).not.toBe(failed.kind);
   });
 
   it("takes the cli, model and arm setting from the config it was given, not from a default", () => {
-    const r = roundRecord(AT, "other.json", cfg({ model: "claude-opus-5", controlArm: false }), { kind: "quiet", reason: "no bee is open for a rewrite" });
+    const r = roundRecord(AT, "manual", "other.json", cfg({ model: "claude-opus-5", controlArm: false }), { kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" });
     expect(r.config).toBe("other.json");
     expect(r.model).toBe("claude-opus-5");
     expect(r.control).toBe(false);
   });
 
+  it("writes every answer Jev gave, including the broken answer that gates nothing (R-3.7, R-9.1)", () => {
+    const delivered = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "delivered", verdict: verdict({ broken: "no" }), bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() });
+    const quiet = roundRecord(AT, "manual", CONFIG, cfg(), { kind: "quiet", verdict: verdict({ bee: "unsure", beeConfidence: 0.4 }), reason: "Jev was not confident enough to name a bee (0.40)" });
+    for (const r of [delivered, quiet]) {
+      // all five answers, not just the two the round acted on
+      expect(Object.keys(r.verdict!).sort()).toEqual(["anger", "angerConfidence", "bee", "beeConfidence", "broken", "brokenConfidence"]);
+      expect(typeof r.trigger).toBe("string");
+    }
+    expect(delivered.verdict!.broken).toBe("no");
+    expect(delivered.trigger).toBe("cron");
+    expect(quiet.verdict!.beeConfidence).toBe(0.4);
+    expect(quiet.trigger).toBe("manual");
+  });
+
+  it("leaves the verdict null when the round ended before Jev was asked, rather than inventing one", () => {
+    const noBees = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" });
+    const noCard = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "failed", verdict: null, reason: "scorecard answered 503" });
+    // an absent answer and a low-confidence answer are different facts, so neither gets a fabricated 0
+    expect(noBees.verdict).toBeNull();
+    expect(noCard.verdict).toBeNull();
+    expect(JSON.parse(line({ kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" }))).toHaveProperty("verdict", null);
+  });
+
   it("records no secret and no signature, for any outcome (R-9.5)", () => {
     const outcomes: Outcome[] = [
-      { kind: "delivered", bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() },
-      { kind: "withheld", bee: "bee1", arm: "withheld", rules: written() },
-      { kind: "quiet", reason: "Jev says leave all three alone" },
+      { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() },
+      { kind: "withheld", verdict: verdict(), bee: "bee1", arm: "withheld", rules: written() },
+      { kind: "quiet", verdict: verdict({ bee: "none" }), reason: "Jev says leave all three alone" },
       // the door's own refusal text is echoed into the reason, so it is the likeliest carrier
-      { kind: "failed", reason: "the door refused the rewrite: 401 bad signature" },
+      { kind: "failed", verdict: verdict(), reason: "the door refused the rewrite: 401 bad signature" },
     ];
     for (const o of outcomes) {
       const json = line(o);
@@ -92,9 +139,27 @@ describe("beekeep: the round record", () => {
   });
 });
 
+describe("beekeep: how the round was launched", () => {
+  it("defaults to manual, because that is what an unflagged run honestly is", () => {
+    expect(asTrigger(undefined)).toBe("manual");
+    expect(asTrigger("")).toBe("manual");
+  });
+
+  it("takes the value given by --trigger or COACH_TRIGGER", () => {
+    expect(asTrigger("cron")).toBe("cron");
+    expect(asTrigger("manual")).toBe("manual");
+  });
+
+  it("refuses to read anything else as cron, since that is the claim a later read leans on", () => {
+    expect(asTrigger("crron")).toBe("manual");
+    expect(asTrigger("CRON")).toBe("manual");
+    expect(asTrigger("systemd")).toBe("manual");
+  });
+});
+
 describe("beekeep: the alert for rounds that could not run", () => {
-  const failed = line({ kind: "failed", reason: "scorecard answered 503" });
-  const quiet = line({ kind: "quiet", reason: "no bee is open for a rewrite" });
+  const failed = line({ kind: "failed", verdict: null, reason: "scorecard answered 503" });
+  const quiet = line({ kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" });
 
   it("fires at exactly the configured number of consecutive failures and not one short of it", () => {
     expect(shouldAlertOnFailures([failed, failed], 3)).toBe(false);
@@ -111,7 +176,7 @@ describe("beekeep: the alert for rounds that could not run", () => {
     expect(shouldAlertOnFailures([failed, quiet, failed], 3)).toBe(false);
     expect(shouldAlertOnFailures([failed, failed, quiet], 3)).toBe(false);
     expect(shouldAlertOnFailures([failed, failed, failed, quiet], 3)).toBe(false);
-    expect(shouldAlertOnFailures([failed, line({ kind: "delivered", bee: "bee1", arm: "delivered", overlayId: 1, status: 200, rules: written() }), failed], 3)).toBe(false);
+    expect(shouldAlertOnFailures([failed, line({ kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", overlayId: 1, status: 200, rules: written() }), failed], 3)).toBe(false);
   });
 
   it("survives a half-written line rather than taking the alert out with it", () => {
