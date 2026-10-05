@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Alerts } from "../src/alerts.js";
+import { runRound } from "../src/coach.js";
 import { ConfigError, loadConfig, originOf, type BeeId } from "../src/config.js";
 import { Db } from "../src/db.js";
 import { Engine } from "../src/engine.js";
@@ -18,6 +19,7 @@ import { isPrivateAddress, KeeperHttp, keeperPath, KeeperSettings, parseHookUrl,
 import { effectiveCoins, liveRules, type OwnerRules } from "../src/lab/brain.js";
 import { LAB_MIN_INTERVAL_MS, LabDoor, labSignature } from "../src/lab/door.js";
 import { LabStore } from "../src/lab/store.js";
+import { redact } from "../src/redact.js";
 import type { MarketFeed } from "../src/market/data.js";
 import { startServer } from "../src/server.js";
 import { Visitors } from "../src/visitors.js";
@@ -26,6 +28,8 @@ import { coin, NOW, testConfig, trend, view } from "./fixtures.js";
 const PASSWORD = "correct horse";
 const HASH = hashPassword(PASSWORD);
 const HOOK = "https://hooks.zapier.com/hooks/catch/123456/abcdefg/";
+// The local Beekeeper's own key, the one the engine documents as the hatch for a coach you script yourself.
+const LAB_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
 const PUBLIC = "http://203.0.113.7";
 const RULES = "Only APE a coin whose r24h_pct and r7d_pct are both positive; RIDE while upl_r is above zero.";
 
@@ -370,7 +374,7 @@ async function engineRig() {
     snapshot: () => engine.snapshot(),
     fetch: (async () => ({ ok: true, status: 200 })) as unknown as typeof fetch,
   });
-  const door = new LabDoor({ store, rounds: keeper, knownCoins: () => ["BTC", "ETH", "SOL"], effectiveCoins: (id, coins) => effectiveCoins(cfg.slots[id].style, cfg.slots[id].coins, coins) });
+  const door = new LabDoor({ store, secret: LAB_SECRET, rounds: keeper, knownCoins: () => ["BTC", "ETH", "SOL"], effectiveCoins: (id, coins) => effectiveCoins(cfg.slots[id].style, cfg.slots[id].coins, coins) });
   const gate = new PasswordGate("x-owner-password", () => HASH, "owner password");
   const http = new KeeperHttp({ keeper, settings, door, gate, name: (id) => cfg.slots[id].name, slot: (id) => cfg.slots[id], overlay: (id) => store.overlay(id) });
   const srv = startServer({ engine: { bus, db, visitors: new Visitors(db), snapshot: () => engine.snapshot(), health: () => engine.health() }, keeper: http, lab: door, profile: () => ({ bees: [] }), beeImage: () => null }, 0, "127.0.0.1");
@@ -397,7 +401,7 @@ async function engineRig() {
     overlay: store.overlay(bee),
     live: liveRules(cfg.slots[bee], store.overlay(bee)),
   });
-  return { engine, store, preview, get, stamp, state };
+  return { base, engine, store, preview, get, stamp, state };
 }
 
 describe("beekeeper routes: the ruleset-version preview", () => {
@@ -453,6 +457,34 @@ describe("beekeeper routes: the ruleset-version preview", () => {
     expect(await r.get("/keeper/ruleset-version")).toBe(405);
     // public, like the scorecard: a wrong owner password is not even looked at
     expect((await r.preview({ bee: "bee1", rules: RULES, coins: [] }, "wrong horse!")).status).toBe(200);
+  });
+
+  it("is what the local coach records: a delivered round's installedVersion is the version the engine then stamps (R-9.3)", async () => {
+    const r = await engineRig();
+    await r.engine.tick();
+    const before = r.stamp("bee3");
+
+    // A whole round against the real engine — its scorecard, its preview, its door — with only Jev and the
+    // rules-writing CLI stood in for. The version recorded here is the join key every attribution figure uses.
+    const out = await runRound({
+      cfg: { engineUrl: r.base, cli: "claude", model: "test-model", confidenceFloor: 0.6, cliTimeoutMs: 1000, controlArm: true, promptFile: "beekeeper/opus-prompt.txt", recordFile: "/dev/null", alertAfterFailures: 3 },
+      template: "rewrite {{bee}} at {{anger}} over {{universe}}",
+      labSecret: LAB_SECRET,
+      fetch: globalThis.fetch,
+      ask: async () => ({ broken: "yes", brokenConfidence: 0.9, bee: "bee3", beeConfidence: 0.9, anger: "4", angerConfidence: 0.8 }),
+      write: async () => ({ idea: "Majors only", rules: RULES, coins: "BTC", reason: "Back to the majors.", quip: "Put the meme coins down.", note: "Sorted." }),
+      survivesRedact: (v) => JSON.stringify(redact(v)) === JSON.stringify(v),
+      coin: () => 0.1,
+      now: Date.now,
+    });
+    expect(out.kind).toBe("delivered");
+    if (out.kind !== "delivered") return;
+
+    // what bee3 was running when the round started, and what it runs now that the round's rules are in force
+    expect(out.replacedVersion).toBe(before);
+    await r.engine.tick();
+    expect(r.stamp("bee3")).toBe(out.installedVersion);
+    expect(out.installedVersion).not.toBe(out.replacedVersion);
   });
 });
 

@@ -79,6 +79,11 @@ jq -r '[.at, .kind, (.bee // "-"), (.reason // .rules.idea)] | @tsv' data/beekee
 jq -r 'select(.kind=="failed") | .reason' data/beekeeper-rounds.jsonl | sort | uniq -c
 ```
 
+A `delivered` or `withheld` round also records `replacedVersion` and `installedVersion`: the ruleset the bee
+was running when the round started, and the one those rules produce (for a withheld round, the one they
+*would* have produced). That is the join key into the report below — without it a withheld round's rules
+match nothing. Both are `null` when the engine could not be asked, which never stops the round.
+
 Then, per ruleset, what the bees actually did:
 
 ```bash

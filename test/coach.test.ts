@@ -15,6 +15,7 @@ import {
   runRound,
   tidyCoins,
   toAscii,
+  VERSION_PATH,
   type CoachConfig,
   type CoachDeps,
   type Scorecard,
@@ -32,6 +33,9 @@ import { Visitors } from "../src/visitors.js";
 
 const survives = (v: unknown) => JSON.stringify(redact(v)) === JSON.stringify(v);
 const GOOD_RULES = "Open only when the trend score is above 4 and close the moment it drops under 1.";
+// The engine answers 16 hex characters: what the bee runs now, and what these rules would make it run.
+const REPLACED = "a1b2c3d4e5f60718";
+const INSTALLED = "f0e1d2c3b4a59687";
 
 const card = (over: Partial<Scorecard> = {}): Scorecard => ({
   scorecard: "BEEKEEPER ROUND\nbee1 ... Rewrite: OPEN",
@@ -84,6 +88,7 @@ function deps(over: Partial<CoachDeps> = {}, calls: string[] = []): CoachDeps {
       const u = String(url);
       calls.push(`${init?.method ?? "GET"} ${new URL(u).pathname}`);
       if (u.endsWith("/keeper/scorecard")) return new Response(JSON.stringify(card()), { status: 200 });
+      if (u.endsWith(VERSION_PATH)) return new Response(JSON.stringify({ current: REPLACED, next: INSTALLED }), { status: 200 });
       return new Response(JSON.stringify({ ok: true, overlay: { id: 42 } }), { status: 200 });
     }) as unknown as typeof globalThis.fetch,
     ask: async () => verdict(),
@@ -190,22 +195,100 @@ describe("coach: the control arm", () => {
     const calls: string[] = [];
     const out = await runRound(deps({ coin: () => 0.9 }, calls));
     expect(out.kind).toBe("withheld");
-    expect(calls).toEqual(["GET /keeper/scorecard"]);
+    // the ruleset-version preview only hashes text, so it is the one request a withheld round may make (R-7.4)
+    expect(calls).toEqual(["GET /keeper/scorecard", `POST ${VERSION_PATH}`]);
     // the rules were still written, so the two arms stay comparable
     if (out.kind === "withheld") expect(out.rules.rules).toBe(GOOD_RULES);
   });
 
-  it("decides the arm only after the bee was picked and the rules were written", async () => {
+  it("decides the arm only after the bee was picked, the rules were written and the version was asked for", async () => {
     const order: string[] = [];
     const out = await runRound(
       deps({
         ask: async () => (order.push("ask"), verdict()),
         write: async () => (order.push("write"), written()),
+        fetch: (async (url: string | URL) => {
+          const u = String(url);
+          if (u.endsWith("/keeper/scorecard")) return new Response(JSON.stringify(card()), { status: 200 });
+          if (u.endsWith(VERSION_PATH)) {
+            order.push("preview");
+            return new Response(JSON.stringify({ current: REPLACED, next: INSTALLED }), { status: 200 });
+          }
+          return new Response(JSON.stringify({ ok: true, overlay: { id: 42 } }), { status: 200 });
+        }) as unknown as typeof globalThis.fetch,
         coin: () => (order.push("coin"), 0.9),
       }),
     );
-    expect(order).toEqual(["ask", "write", "coin"]);
+    expect(order).toEqual(["ask", "write", "preview", "coin"]);
     expect(out.kind).toBe("withheld");
+  });
+});
+
+describe("coach: the ruleset version a round replaced and installed", () => {
+  /** Every ruleset-version request a round made, as the engine's strict schema would have received it. */
+  function previewRig(answer: () => Response = () => new Response(JSON.stringify({ current: REPLACED, next: INSTALLED }), { status: 200 })) {
+    const previews: Array<{ method: string; body: unknown }> = [];
+    const fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/keeper/scorecard")) return new Response(JSON.stringify(card()), { status: 200 });
+      if (u.endsWith(VERSION_PATH)) {
+        previews.push({ method: init?.method ?? "GET", body: JSON.parse(String(init?.body)) as unknown });
+        return answer();
+      }
+      return new Response(JSON.stringify({ ok: true, overlay: { id: 42 } }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    return { previews, fetch };
+  }
+
+  it("records what the rewrite replaced and what it installed, on both arms (R-7.3, R-9.3)", async () => {
+    const delivered = await runRound(deps({ coin: () => 0.1 }));
+    expect(delivered.kind).toBe("delivered");
+    const withheld = await runRound(deps({ coin: () => 0.9 }));
+    expect(withheld.kind).toBe("withheld");
+    // the withheld arm is the baseline the three-month comparison rests on: with no version it joins to nothing
+    for (const out of [delivered, withheld]) expect(out).toMatchObject({ replacedVersion: REPLACED, installedVersion: INSTALLED });
+  });
+
+  it("asks exactly once on each arm, with the identical body (R-7.2, R-7.6)", async () => {
+    const d = previewRig();
+    expect((await runRound(deps({ fetch: d.fetch, coin: () => 0.1 }))).kind).toBe("delivered");
+    const w = previewRig();
+    expect((await runRound(deps({ fetch: w.fetch, coin: () => 0.9 }))).kind).toBe("withheld");
+    // One each. Move the call inside either branch and the other arm's list is empty, which is the whole point:
+    // the arms must have done identical work up to the coin flip or the comparison between them means nothing.
+    expect(d.previews.length).toBe(1);
+    expect(w.previews.length).toBe(1);
+    expect(w.previews).toEqual(d.previews);
+    expect(d.previews[0]).toEqual({ method: "POST", body: { bee: "bee1", rules: GOOD_RULES, coins: ["BTC", "ETH"] } });
+  });
+
+  it("asks about the rules the door would have been given, not what the model wrote", async () => {
+    const r = previewRig();
+    const raw = written({ rules: "  Open  when the trend score is over 4 × ATR\nand close under 1.  ", coins: "btc, btc, PEPE, eth" });
+    const out = await runRound(deps({ fetch: r.fetch, write: async () => raw }));
+    expect(out.kind).toBe("delivered");
+    // collapsed, stripped of the non-ASCII, coins uppercased, de-duplicated and the untradeable one dropped
+    expect(r.previews[0]!.body).toEqual({ bee: "bee1", rules: "Open when the trend score is over 4 ATR and close under 1.", coins: ["BTC", "ETH"] });
+  });
+
+  it("records nulls when the version cannot be had, and the round runs on regardless", async () => {
+    const answers: Array<() => Response> = [
+      () => new Response(JSON.stringify({ error: "bad request" }), { status: 400 }),
+      () => new Response("not json at all", { status: 200 }),
+      () => new Response(JSON.stringify({ current: "not a version", next: 42 }), { status: 200 }),
+      () => {
+        throw new Error("the engine went down mid-round");
+      },
+    ];
+    for (const answer of answers) {
+      // audit bookkeeping must never be able to change the thing it observes: same arms, same delivery
+      const delivered = await runRound(deps({ fetch: previewRig(answer).fetch, coin: () => 0.1 }));
+      expect(delivered.kind).toBe("delivered");
+      if (delivered.kind === "delivered") expect(delivered.overlayId).toBe(42);
+      const withheld = await runRound(deps({ fetch: previewRig(answer).fetch, coin: () => 0.9 }));
+      expect(withheld.kind).toBe("withheld");
+      for (const out of [delivered, withheld]) expect(out).toMatchObject({ replacedVersion: null, installedVersion: null });
+    }
   });
 });
 

@@ -9,6 +9,11 @@ import { asTrigger, roundRecord, shouldAlertOnFailures, type CoachConfig, type O
 const LAB_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
 const AT = "2026-10-05T04:00:00.000Z";
 const CONFIG = "beekeeper/coach.json";
+// A ruleset version is 16 hex characters: short enough that the redactor leaves it alone, which is why the
+// record can hold the join key between a round and the engine's decision rows without holding a secret.
+const REPLACED = "a1b2c3d4e5f60718";
+const INSTALLED = "f0e1d2c3b4a59687";
+const versions = { replacedVersion: REPLACED, installedVersion: INSTALLED };
 
 const cfg = (over: Partial<CoachConfig> = {}): CoachConfig => ({
   engineUrl: "http://127.0.0.1:8080",
@@ -48,7 +53,7 @@ const line = (outcome: Outcome): string => JSON.stringify(roundRecord(AT, "cron"
 
 describe("beekeep: the round record", () => {
   it("carries the round's own metadata alongside everything a delivered outcome knows", () => {
-    const r = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() });
+    const r = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", ...versions, overlayId: 42, status: 200, rules: written() });
     expect(r).toEqual({
       at: AT,
       trigger: "cron",
@@ -60,14 +65,16 @@ describe("beekeep: the round record", () => {
       verdict: verdict(),
       bee: "bee1",
       arm: "delivered",
+      replacedVersion: REPLACED,
+      installedVersion: INSTALLED,
       overlayId: 42,
       status: 200,
       rules: written(),
     });
   });
 
-  it("keeps the full rules of a withheld round, which is the arm the comparison rests on", () => {
-    const r = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "withheld", verdict: verdict({ bee: "bee3" }), bee: "bee3", arm: "withheld", rules: written() });
+  it("keeps the full rules of a withheld round, and the version they would have installed (R-7.3)", () => {
+    const r = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "withheld", verdict: verdict({ bee: "bee3" }), bee: "bee3", arm: "withheld", ...versions, rules: written() });
     expect(r).toEqual({
       at: AT,
       trigger: "cron",
@@ -79,6 +86,8 @@ describe("beekeep: the round record", () => {
       verdict: verdict({ bee: "bee3" }),
       bee: "bee3",
       arm: "withheld",
+      replacedVersion: REPLACED,
+      installedVersion: INSTALLED,
       rules: written(),
     });
   });
@@ -99,7 +108,7 @@ describe("beekeep: the round record", () => {
   });
 
   it("writes every answer Jev gave, including the broken answer that gates nothing (R-3.7, R-9.1)", () => {
-    const delivered = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "delivered", verdict: verdict({ broken: "no" }), bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() });
+    const delivered = roundRecord(AT, "cron", CONFIG, cfg(), { kind: "delivered", verdict: verdict({ broken: "no" }), bee: "bee1", arm: "delivered", ...versions, overlayId: 42, status: 200, rules: written() });
     const quiet = roundRecord(AT, "manual", CONFIG, cfg(), { kind: "quiet", verdict: verdict({ bee: "unsure", beeConfidence: 0.4 }), reason: "Jev was not confident enough to name a bee (0.40)" });
     for (const r of [delivered, quiet]) {
       // all five answers, not just the two the round acted on
@@ -123,8 +132,8 @@ describe("beekeep: the round record", () => {
 
   it("records no secret and no signature, for any outcome (R-9.5)", () => {
     const outcomes: Outcome[] = [
-      { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", overlayId: 42, status: 200, rules: written() },
-      { kind: "withheld", verdict: verdict(), bee: "bee1", arm: "withheld", rules: written() },
+      { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", ...versions, overlayId: 42, status: 200, rules: written() },
+      { kind: "withheld", verdict: verdict(), bee: "bee1", arm: "withheld", ...versions, rules: written() },
       { kind: "quiet", verdict: verdict({ bee: "none" }), reason: "Jev says leave all three alone" },
       // the door's own refusal text is echoed into the reason, so it is the likeliest carrier
       { kind: "failed", verdict: verdict(), reason: "the door refused the rewrite: 401 bad signature" },
@@ -135,6 +144,8 @@ describe("beekeep: the round record", () => {
       // any long hex run would be a secret or an HMAC; the real signature is 64 hex characters
       expect(json).not.toMatch(/[0-9a-fA-F]{32,}/);
       expect(json.toLowerCase()).not.toContain("x-lab-sig");
+      // and the two ruleset versions are still there: at 16 hex they sit under that rule rather than bending it
+      if ("installedVersion" in o) expect(json).toContain(`"replacedVersion":"${REPLACED}","installedVersion":"${INSTALLED}"`);
     }
   });
 });
@@ -176,7 +187,7 @@ describe("beekeep: the alert for rounds that could not run", () => {
     expect(shouldAlertOnFailures([failed, quiet, failed], 3)).toBe(false);
     expect(shouldAlertOnFailures([failed, failed, quiet], 3)).toBe(false);
     expect(shouldAlertOnFailures([failed, failed, failed, quiet], 3)).toBe(false);
-    expect(shouldAlertOnFailures([failed, line({ kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", overlayId: 1, status: 200, rules: written() }), failed], 3)).toBe(false);
+    expect(shouldAlertOnFailures([failed, line({ kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", ...versions, overlayId: 1, status: 200, rules: written() }), failed], 3)).toBe(false);
   });
 
   it("survives a half-written line rather than taking the alert out with it", () => {

@@ -13,6 +13,8 @@ import { z } from "zod";
 import { labSignature } from "./lab/door.js";
 
 export const OVERLAY_PATH = "/lab/overlay";
+/** The engine's read-only ruleset-version preview (keeper-http.ts). Asked on both arms, so it must change nothing. */
+export const VERSION_PATH = "/keeper/ruleset-version";
 /** The door's own bounds (lab/door.ts). Checked here so a refusal never burns a round. */
 export const RULES_MIN = 10;
 export const RULES_MAX = 500;
@@ -73,6 +75,14 @@ export interface WrittenRules {
 
 export type Arm = "delivered" | "withheld";
 
+// The ruleset version a rewrite replaced and the one it installed (R-9.3) — for a withheld round, the one it
+// would have installed (R-7.3). This is the join key between a round record and the engine's `decisions` rows,
+// and it cannot be reconstructed afterwards because the overlay stack moves underneath.
+export interface Versions {
+  replacedVersion: string | null;
+  installedVersion: string | null;
+}
+
 /** How the round was launched. Not knowable inside the round: whatever started the process supplies it. */
 export const TRIGGERS = ["cron", "manual"] as const;
 export type Trigger = (typeof TRIGGERS)[number];
@@ -88,9 +98,9 @@ export const asTrigger = (raw: string | undefined): Trigger => (TRIGGERS.include
 // are different facts, so no verdict is ever invented for those rounds.
 export type Outcome =
   /** A rewrite reached the door. */
-  | { kind: "delivered"; verdict: Verdict; bee: string; arm: Arm; overlayId: number | null; status: number; rules: WrittenRules }
+  | ({ kind: "delivered"; verdict: Verdict; bee: string; arm: Arm; overlayId: number | null; status: number; rules: WrittenRules } & Versions)
   /** A rewrite was produced and deliberately not sent: the control arm. */
-  | { kind: "withheld"; verdict: Verdict; bee: string; arm: Arm; rules: WrittenRules }
+  | ({ kind: "withheld"; verdict: Verdict; bee: string; arm: Arm; rules: WrittenRules } & Versions)
   /** The round ran and chose to change nothing. */
   | { kind: "quiet"; verdict: Verdict | null; reason: string }
   /** The round could not run. Never to be confused with "quiet". */
@@ -203,6 +213,36 @@ export interface CoachDeps {
   now: () => number;
 }
 
+const UNKNOWN_VERSIONS: Versions = { replacedVersion: null, installedVersion: null };
+
+/**
+ * Asks the engine what version this bee runs now and what version the sanitised rules would produce.
+ *
+ * Never throws and never abandons the round: this is audit bookkeeping, and the engine takes the same line for
+ * its own ruleset stamp (`stamp` in src/engine.ts), where a failed audit write records an unknown ruleset
+ * rather than disturb a trade. An engine that went down mid-round, a 400, a reply that is not two version
+ * strings — all of them record two nulls and let the round deliver or withhold exactly as it would have.
+ */
+async function previewVersions(d: CoachDeps, base: string, p: OverlayPayload): Promise<Versions> {
+  try {
+    const r = await d.fetch(`${base}${VERSION_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // The route's schema is strict: these three fields and nothing else.
+      body: JSON.stringify({ bee: p.bee, rules: p.rules, coins: p.coins }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r.ok) return UNKNOWN_VERSIONS;
+    const v = (await r.json()) as { current?: unknown; next?: unknown };
+    // A version is 16 hex characters. Anything else is not the join key the record would be claiming to hold,
+    // and a half-recognised string is worse than an honest null: it joins to nothing and nobody can tell why.
+    const version = (x: unknown) => (typeof x === "string" && /^[0-9a-f]{16}$/.test(x) ? x : null);
+    return { replacedVersion: version(v.current), installedVersion: version(v.next) };
+  } catch {
+    return UNKNOWN_VERSIONS;
+  }
+}
+
 export async function runRound(d: CoachDeps): Promise<Outcome> {
   const base = d.cfg.engineUrl.replace(/\/+$/, "");
 
@@ -241,9 +281,15 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
   const built = buildPayload(verdict.bee, verdict.anger, written, tradeableCoins(card), d.survivesRedact);
   if (!built.ok) return { kind: "failed", verdict, reason: built.reason };
 
-  // Only now does the arm get decided, so both arms were selected and cleaned identically.
+  // Asked here, on the one path both arms take, and off the sanitised payload rather than the raw model output:
+  // the version has to be the one that would really have been installed. Putting this inside the delivered
+  // branch and backfilling the withheld one would make the two arms do different work, which is the thing
+  // R-7.2 and R-7.6 forbid — and the comparison between them is the only reason the control arm exists.
+  const versions = await previewVersions(d, base, built.payload);
+
+  // Only now does the arm get decided, so both arms were selected, cleaned and priced identically.
   const arm = pickArm(d.cfg.controlArm, d.coin);
-  if (arm === "withheld") return { kind: "withheld", verdict, bee: verdict.bee, arm, rules: written };
+  if (arm === "withheld") return { kind: "withheld", verdict, bee: verdict.bee, arm, ...versions, rules: written };
 
   const body = JSON.stringify(built.payload);
   const ts = String(d.now());
@@ -263,7 +309,7 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
       overlayId = null;
     }
     if (!r.ok) return { kind: "failed", verdict, reason: `the door refused the rewrite: ${r.status} ${text}` };
-    return { kind: "delivered", verdict, bee: verdict.bee, arm, overlayId, status: r.status, rules: written };
+    return { kind: "delivered", verdict, bee: verdict.bee, arm, ...versions, overlayId, status: r.status, rules: written };
   } catch (err) {
     return { kind: "failed", verdict, reason: `could not reach the door: ${(err as Error).message}` };
   }
