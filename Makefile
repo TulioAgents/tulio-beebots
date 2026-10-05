@@ -10,6 +10,9 @@
 #   make dashboard  dashboard only
 #   make e2e        the whole engine on paper with a fake Jev (no keys, no spend)
 #   make check      typecheck, lint and tests
+#   make rules-report  what each ruleset did (read-only, no spend)
+#   make replay-probe  does Jev agree with itself? (spends Jev credit)
+#   make beekeep       one Beekeeper round (spends Jev + CLI credit)
 #
 # The engine needs Node >= 22.13 for node:sqlite. If your shell's node is older, this
 # Makefile uses the nvm-installed one below instead, so you never have to switch first.
@@ -25,10 +28,10 @@ ifneq ($(wildcard $(NVM_NODE)/node),)
 N := PATH="$(NVM_NODE):$$PATH"
 endif
 
-.PHONY: help node ports stop reset demo demo-engine keycheck install dev engine dashboard e2e check test typecheck lint
+.PHONY: help node ports stop reset demo demo-engine keycheck install dev engine dashboard e2e check test typecheck lint rules-report replay-probe beekeep
 
 help:
-	@sed -n '2,13p' Makefile | cut -c3-
+	@sed -n '2,15p' Makefile | cut -c3-
 
 # Fails with a readable message instead of dying inside tsx with ERR_UNKNOWN_BUILTIN_MODULE.
 node:
@@ -130,3 +133,19 @@ demo-engine: node
 
 keycheck: node
 	$(N) KEYCHECK_ONLY=demo pnpm keycheck
+
+# What each ruleset actually did. Read-only: no keys, no network, no Jev spend.
+# make rules-report ARGS="--bee bee2 --since 7d"
+rules-report: node
+	$(N) pnpm rules-report -- $(ARGS)
+
+# Does Jev agree with itself? Decides whether a replay comparison is worth building.
+# SPENDS JEV CREDIT (one call per sampled decision). make replay-probe ARGS="--n 100"
+replay-probe: node
+	$(N) pnpm jev-replay-probe -- $(ARGS)
+
+# One Beekeeper round, for cron. Needs LAB_SECRET and TYPESAFE_API_KEY.
+# SPENDS: three Jev questions, plus the local CLI when it gets as far as writing rules.
+# make beekeep ARGS="--config beekeeper/coach.json"
+beekeep: node
+	$(N) pnpm beekeep -- $(ARGS)

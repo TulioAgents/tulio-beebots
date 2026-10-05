@@ -1,0 +1,11 @@
+{
+  "engineUrl": "http://127.0.0.1:8080",
+  "cli": "claude",
+  "model": "claude-opus-5",
+  "confidenceFloor": 0.6,
+  "cliTimeoutMs": 180000,
+  "controlArm": true,
+  "promptFile": "beekeeper/opus-prompt.txt",
+  "recordFile": "data/beekeeper-rounds.jsonl",
+  "alertAfterFailures": 3
+}

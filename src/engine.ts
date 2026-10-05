@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { customBrain } from "./bees/custom.js";
 import { BRAINS } from "./bees/index.js";
 import { maxNotionalUsd, minutesSince, positionNotional, profitLockStop } from "./bees/common.js";
@@ -25,6 +26,26 @@ const PULSE_MS = 4_000;
 /** How long a bee opens nothing after the exchange rejects one of its new orders. */
 export const ORDER_REJECT_PAUSE_MS = 10 * 60_000;
 const EQUITY_SNAPSHOT_MS = 10_000;
+/** How long a decision keeps its input snapshot before the column is cleared (the row stays). */
+const DECISION_STATE_KEEP_MS = 14 * 86_400_000;
+
+/**
+ * Which ruleset produced a decision. The id is sha256 of the composed strategy string, so it moves whenever
+ * the text Jev actually sees moves: a Beekeeper overlay, or the owner editing rules in Setup.
+ *
+ * Keyed on the brain object, which the engine caches and only replaces on a rebuild (see `brain()`), so this
+ * hashes once per rules change rather than once per decision. Deliberately NOT inside `brain()`: that is on
+ * the path to stopFor/trail, and audit bookkeeping must never be able to throw there.
+ */
+const RULES_VERSIONS = new WeakMap<BeeBrain, string>();
+function rulesVersionOf(brain: BeeBrain): string {
+  let v = RULES_VERSIONS.get(brain);
+  if (v === undefined) {
+    v = createHash("sha256").update(brain.strategy).digest("hex").slice(0, 16);
+    RULES_VERSIONS.set(brain, v);
+  }
+  return v;
+}
 
 export interface EngineDeps {
   cfg: Config;
@@ -134,6 +155,7 @@ export class Engine {
     this.loop(() => this.refreshMarket(), cfg.dataRefreshMs);
     this.timers.push(setInterval(() => this.d.bus.emit("heartbeat", {}), 15_000));
     this.timers.push(setInterval(() => this.d.db.pruneEvents(this.now() - 3 * 86_400_000), 3_600_000));
+    this.timers.push(setInterval(() => this.d.db.pruneDecisionStates(this.now() - DECISION_STATE_KEEP_MS), 3_600_000));
   }
 
   stop(): void {
@@ -302,12 +324,18 @@ export class Engine {
 
     // Hard rule 10: recorded before it is acted on.
     const costUsd = r && r.ok ? r.costUsd : 0;
+    const { rulesVersion, overlayId } = this.stamp(id, brain, now);
     const decisionId = db.insertDecision({
       bee: id,
       ts: now,
+      rulesVersion,
+      overlayId,
       stateHash: snap.hash,
       stateJson: JSON.stringify(snap.state),
-      menuJson: JSON.stringify(Object.keys(menu)),
+      // Label -> description, exactly the `criteria` Jev was asked to choose between (jev.ts). Descriptions
+      // carry live numbers ("through trigger by 0.42%"), so storing only the labels would make the question
+      // Jev actually saw unreconstructable, and any later replay would be measuring a different prompt.
+      menuJson: JSON.stringify(Object.fromEntries(Object.entries(menu).map(([label, opt]) => [label, opt.desc]))),
       choice: r && r.ok ? r.choice : null,
       probabilities: r && r.ok ? r.probabilities : null,
       confidence: r && r.ok ? r.confidence : null,
@@ -386,8 +414,9 @@ export class Engine {
     const prev = this.last[id];
     this.last[id] = { choice: null, top3: prev?.top3 ?? [], confidence: null, latencyMs: null, status: risk.status, ts: now };
     if (risk.action.kind !== "none") {
+      const { rulesVersion, overlayId } = this.stamp(id, this.brain(id), now);
       const decisionId = db.insertDecision({
-        bee: id, ts: now, stateHash: "", stateJson: "{}", menuJson: "[]", choice: null, probabilities: null, confidence: null,
+        bee: id, ts: now, rulesVersion, overlayId, stateHash: "", stateJson: "{}", menuJson: "[]", choice: null, probabilities: null, confidence: null,
         conviction: null, latencyMs: null, inputTokens: null, jevCostUsd: 0, jevError: null,
         action: risk.action, vetoedBy: null, forcedBy: risk.forcedBy, status: risk.status,
       });
@@ -760,6 +789,32 @@ export class Engine {
     }
     const s = this.d.cfg.slots[id];
     return (this.brains[id] ??= customBrain(BRAINS[s.style], liveRules(s, lab?.overlay(id) ?? null)));
+  }
+
+  /**
+   * The ruleset stamp for a decision row, and the first sighting of that ruleset's text.
+   * Never throws: an audit write must not be able to affect a trade. On failure the decision is still
+   * recorded, with an unknown ruleset.
+   */
+  private stamp(id: BeeId, brain: BeeBrain, now: number): { rulesVersion: string | null; overlayId: number | null } {
+    try {
+      const version = rulesVersionOf(brain);
+      const overlay = this.d.lab?.overlay(id) ?? null;
+      const live = liveRules(this.d.cfg.slots[id], overlay);
+      this.d.db.upsertRuleset({
+        version,
+        bee: id,
+        firstSeen: now,
+        overlayId: overlay?.id ?? null,
+        strategy: brain.strategy,
+        rules: live.rules || null,
+        coins: live.coins,
+      });
+      return { rulesVersion: version, overlayId: overlay?.id ?? null };
+    } catch (err) {
+      log.warn("ruleset audit write failed", { bee: id, err: safeError(err) });
+      return { rulesVersion: null, overlayId: null };
+    }
   }
 
   private knobs(id: BeeId) {

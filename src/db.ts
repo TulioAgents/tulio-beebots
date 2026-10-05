@@ -11,10 +11,18 @@ CREATE TABLE IF NOT EXISTS decisions (
   state_hash TEXT, state_json TEXT, menu_json TEXT,
   choice TEXT, probabilities_json TEXT, confidence REAL, conviction REAL,
   latency_ms INTEGER, input_tokens INTEGER, jev_cost_usd REAL NOT NULL DEFAULT 0, jev_error TEXT,
-  action_json TEXT NOT NULL, vetoed_by TEXT, forced_by TEXT, status TEXT
+  action_json TEXT NOT NULL, vetoed_by TEXT, forced_by TEXT, status TEXT,
+  rules_version TEXT, overlay_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS decisions_bee_ts ON decisions(bee, ts);
 CREATE INDEX IF NOT EXISTS decisions_ts ON decisions(ts);
+/* decisions_rules is created in addColumns(), after the audit columns exist: on a database that predates
+   them, CREATE TABLE IF NOT EXISTS is a no-op and an index over rules_version here would fail to compile. */
+/* The strategy text behind each rules_version, written once per distinct ruleset so a decision row stays small. */
+CREATE TABLE IF NOT EXISTS rulesets (
+  version TEXT PRIMARY KEY, bee TEXT NOT NULL, first_seen INTEGER NOT NULL,
+  overlay_id INTEGER, strategy TEXT NOT NULL, rules TEXT, coins_json TEXT
+);
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY, decision_id INTEGER NOT NULL, bee TEXT NOT NULL, ts INTEGER NOT NULL,
   cl_ord_id TEXT NOT NULL UNIQUE, ord_id TEXT, inst_id TEXT NOT NULL, side TEXT NOT NULL,
@@ -40,9 +48,23 @@ CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `;
 
+/** A ruleset the bees actually ran: the composed strategy text behind one `rules_version`. */
+export interface RulesetRow {
+  version: string;
+  bee: BeeId;
+  firstSeen: number;
+  overlayId: number | null;
+  strategy: string;
+  rules: string | null;
+  coins: string[];
+}
+
 export interface DecisionRow {
   bee: BeeId;
   ts: number;
+  /** Which ruleset produced this decision. Null on rows written before audit stamping existed. */
+  rulesVersion?: string | null;
+  overlayId?: number | null;
   stateHash: string | null;
   stateJson: string | null;
   menuJson: string | null;
@@ -105,19 +127,46 @@ export class Db {
     this.raw = new DatabaseSync(path);
     this.raw.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
     this.raw.exec(SCHEMA);
+    this.addColumns();
+  }
+
+  /**
+   * CREATE TABLE IF NOT EXISTS leaves an older decisions table alone, so columns added later have to be ALTERed in.
+   * Additive and idempotent: existing rows read back NULL, which the audit export reports as "unknown ruleset".
+   */
+  private addColumns(): void {
+    const have = new Set((this.raw.prepare(`PRAGMA table_info(decisions)`).all() as Array<{ name: string }>).map((c) => c.name));
+    for (const [name, decl] of [
+      ["rules_version", "TEXT"],
+      ["overlay_id", "INTEGER"],
+    ] as const) {
+      if (!have.has(name)) this.raw.exec(`ALTER TABLE decisions ADD COLUMN ${name} ${decl}`);
+    }
+    // Only now can an index name rules_version, whether this database is new or predates the column.
+    this.raw.exec(`CREATE INDEX IF NOT EXISTS decisions_rules ON decisions(bee, rules_version)`);
+  }
+
+  /** First time a ruleset is seen, keep its text. Later decisions only carry the version. */
+  upsertRuleset(r: RulesetRow): void {
+    this.raw
+      .prepare(
+        `INSERT INTO rulesets (version, bee, first_seen, overlay_id, strategy, rules, coins_json) VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT(version) DO NOTHING`,
+      )
+      .run(r.version, r.bee, r.firstSeen, r.overlayId, r.strategy, r.rules, JSON.stringify(r.coins));
   }
 
   insertDecision(d: DecisionRow): number {
     const r = this.raw
       .prepare(
         `INSERT INTO decisions (bee, ts, state_hash, state_json, menu_json, choice, probabilities_json, confidence, conviction,
-          latency_ms, input_tokens, jev_cost_usd, jev_error, action_json, vetoed_by, forced_by, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          latency_ms, input_tokens, jev_cost_usd, jev_error, action_json, vetoed_by, forced_by, status, rules_version, overlay_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         d.bee, d.ts, d.stateHash, d.stateJson, d.menuJson, d.choice, d.probabilities ? JSON.stringify(d.probabilities) : null,
         d.confidence, d.conviction, d.latencyMs, d.inputTokens, d.jevCostUsd, d.jevError, JSON.stringify(d.action),
-        d.vetoedBy, d.forcedBy, d.status,
+        d.vetoedBy, d.forcedBy, d.status, d.rulesVersion ?? null, d.overlayId ?? null,
       );
     return Number(r.lastInsertRowid);
   }
@@ -217,6 +266,15 @@ export class Db {
 
   pruneEvents(olderThanTs: number): void {
     this.raw.prepare(`DELETE FROM events WHERE ts < ?`).run(olderThanTs);
+  }
+
+  /**
+   * Drop the bulky input snapshot off old decisions, keeping the row. `state_json` is ~1.2 KB on ~26k rows a
+   * day, and it is the only part of a decision nothing reads after the fact. Clearing the column instead of
+   * deleting the row keeps every per-ruleset attribution count correct forever.
+   */
+  pruneDecisionStates(olderThanTs: number): void {
+    this.raw.prepare(`UPDATE decisions SET state_json = NULL WHERE ts < ? AND state_json IS NOT NULL`).run(olderThanTs);
   }
 
   jevSpendSince(ts: number): number {
