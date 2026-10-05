@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from "react";
 import { playOrder } from "./sound";
-import type { AnyEvent, BeeName, CapEvent, DecisionEvent, FillEvent, FundingEvent, PublicBee, Snapshot } from "./types";
+import { applyProfile, type AnyEvent, type BeeName, type CapEvent, type DecisionEvent, type FillEvent, type FundingEvent, type KeeperEntry, type KeeperEvent, type Profile, type PublicBee, type Snapshot } from "./types";
 
 const MAX_DECISIONS = 60;
 const MAX_POINTS = 1500;
@@ -12,13 +12,20 @@ export interface Toast extends FillEvent {
   id: number;
 }
 
+export interface KeeperToast {
+  id: number;
+  entry: KeeperEntry;
+}
+
 export interface FeedState {
   snap: Snapshot | null;
   bees: Partial<Record<BeeName, PublicBee>>;
   curves: Partial<Record<BeeName, Curve>>;
   decisions: DecisionEvent[];
   toasts: Toast[];
-  flashes: Partial<Record<BeeName, { kind: "fill" | "funding" | "cap"; at: number; text: string }>>;
+  /** The Beekeeper just rewrote a bee: one big card, like an order card. */
+  keeperToasts: KeeperToast[];
+  flashes: Partial<Record<BeeName, { kind: "fill" | "funding" | "cap" | "keeper"; at: number; text: string }>>;
   connected: boolean;
   lastEventAt: number;
   decisionTimes: number[];
@@ -60,8 +67,9 @@ function reduce(s: FeedState, a: Action): FeedState {
       return { ...s, connected: a.on };
     case "expire": {
       const toasts = s.toasts.filter((t) => a.now - t.id < 7000);
+      const keeperToasts = s.keeperToasts.filter((t) => a.now - t.id < 9000);
       const decisionTimes = s.decisionTimes.filter((t) => a.now - t < 60_000);
-      return toasts.length === s.toasts.length && decisionTimes.length === s.decisionTimes.length ? s : { ...s, toasts, decisionTimes };
+      return toasts.length === s.toasts.length && keeperToasts.length === s.keeperToasts.length && decisionTimes.length === s.decisionTimes.length ? s : { ...s, toasts, keeperToasts, decisionTimes };
     }
     case "event": {
       const ev = a.ev;
@@ -96,6 +104,16 @@ function reduce(s: FeedState, a: Action): FeedState {
           const c = ev as CapEvent;
           return { ...base, flashes: { ...s.flashes, [c.bee]: { kind: "cap", at: now, text: c.detail } } };
         }
+        case "keeper": {
+          // The card itself follows /snapshot; the event makes it land at once instead of on the next 5 s poll.
+          const e = (ev as KeeperEvent).entry;
+          if (!e || typeof e.id !== "number") return base;
+          const k = s.snap?.keeper;
+          const snap = s.snap && k ? { ...s.snap, keeper: { ...k, entries: [e, ...k.entries.filter((x) => x.id !== e.id)].sort((x, y) => y.id - x.id).slice(0, 12) } } : s.snap;
+          if (e.action !== "rewrote" || !e.bee) return { ...base, snap };
+          toastId = Math.max(toastId + 1, now);
+          return { ...base, snap, keeperToasts: [...s.keeperToasts, { id: toastId, entry: e }].slice(-2), flashes: { ...s.flashes, [e.bee]: { kind: "keeper", at: now, text: e.idea ?? "new rules" } } };
+        }
         case "recon":
           return s.snap ? { ...base, snap: { ...s.snap, recon: { ok: ev.ok as boolean, detail: ev.detail as string, ts: ev.ts } } } : base;
         default:
@@ -105,7 +123,7 @@ function reduce(s: FeedState, a: Action): FeedState {
   }
 }
 
-const initial: FeedState = { snap: null, bees: {}, curves: {}, decisions: [], toasts: [], flashes: {}, connected: false, lastEventAt: 0, decisionTimes: [] };
+const initial: FeedState = { snap: null, bees: {}, curves: {}, decisions: [], toasts: [], keeperToasts: [], flashes: {}, connected: false, lastEventAt: 0, decisionTimes: [] };
 
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(path, { cache: "no-store" });
@@ -143,6 +161,16 @@ export function useFeed(soundOn: boolean): FeedState {
         return;
       }
       dispatch({ t: "event", ev });
+      if (ev.type === "keeper") {
+        const action = (ev as KeeperEvent).entry?.action;
+        if (action === "rewrote" && sound.current) playOrder("open");
+        // A bee's rules just changed (rewritten, or put back): fetch them again so its column shows the ones it is on.
+        if (action === "rewrote" || action === "rolled_back") {
+          void getJson<Profile>("/profile")
+            .then((p) => alive && !p.setup && applyProfile(p))
+            .catch(() => {});
+        }
+      }
       if (ev.type === "fill" && sound.current) {
         const f = ev as FillEvent;
         const closing = f.purpose !== "open" && f.purpose !== "add";

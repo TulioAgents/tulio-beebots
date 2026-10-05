@@ -1,6 +1,6 @@
 {
   "name": "beebots",
-  "version": "2026.9.27",
+  "version": "2026.10.2",
   "private": true,
   "description": "Three AI trading bees on OKX EEA X-Perps, every decision made by Jev",
   "type": "module",

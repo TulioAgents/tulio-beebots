@@ -111,6 +111,21 @@ The Hive is a public leaderboard at [beebots.tech](https://beebots.tech) where e
 
 The Hive is a game, not a signal service. **Not financial advice.**
 
+## The Beekeeper (optional, Zapier)
+
+The Beekeeper is an outside coach for your bees. Every few hours he looks at all three, and if one keeps losing
+because its rules are wrong, he writes it new rules. He runs as a Zap on Zapier: Jev picks the bee, and Claude
+Opus 5.5 writes the rules.
+
+- **Watch it being built:** [youtube.com/watch?v=cTUnM9trqfs](https://www.youtube.com/watch?v=cTUnM9trqfs)
+- **Set it up:** copy the Zap from [mrc.fm/beekeeper](https://mrc.fm/beekeeper), then paste its hook URL into
+  **Connect the Beekeeper** on your dashboard. The full walk-through is in [docs/BEEKEEPER.md](docs/BEEKEEPER.md).
+- **What he can change:** a bee's rules text and its coin list. Never leverage, stops, caps or real money settings.
+  One rewrite per bee every 20 hours.
+- **You stay in charge:** every rewrite shows on the dashboard with an **Undo** next to it. Undo, Connect and
+  Disconnect need your owner password.
+- **Works on paper.** No exchange account needed.
+
 ## How your bees trade
 
 Your sentence becomes two things the engine enforces, and one it passes on:
