@@ -157,6 +157,94 @@ describe("coach: cleaning what the model wrote", () => {
   });
 });
 
+describe("coach: a CLI response that is not the six declared fields (R-4.6)", () => {
+  const FIELDS = ["idea", "rules", "coins", "reason", "quip", "note"] as const;
+
+  /** The six fields minus one, the way a tool that half-obeyed its schema would have answered. */
+  const missing = (field: string): Record<string, unknown> => {
+    const partial: Record<string, unknown> = { ...written() };
+    delete partial[field];
+    return partial;
+  };
+
+  it("abandons the round naming the field that was missing, and asks the engine for nothing", async () => {
+    for (const field of FIELDS) {
+      const calls: string[] = [];
+      const out = await runRound(deps({ write: async () => missing(field) }, calls));
+      expect(out.kind).toBe("failed");
+      if (out.kind === "failed") expect(out.reason).toContain(`${field}: Required`);
+      // not even the ruleset-version preview: the round ends before there is a payload to ask about
+      expect(calls).toEqual(["GET /keeper/scorecard"]);
+      // a failed round, so the record line and the liveness alert treat it like every other one (R-1.2, R-1.4)
+      expect(out.verdict).toEqual(verdict());
+    }
+  });
+
+  it("resolves to a failed round rather than throwing out of the round when coins is missing", async () => {
+    // `tidyCoins` does `raw.split`: on undefined that is a TypeError out of `buildPayload`, which is called with
+    // no try around it, so the process used to die on an unhandled rejection with no record and no reason.
+    await expect(runRound(deps({ write: async () => missing("coins") }))).resolves.toMatchObject({ kind: "failed" });
+  });
+
+  it("sends no body at all rather than one holding the literal text \"undefined\"", async () => {
+    const bodies: string[] = [];
+    const watched = (raw: unknown) =>
+      deps({
+        write: async () => raw,
+        fetch: (async (url: string | URL, init?: RequestInit) => {
+          const u = String(url);
+          if (u.endsWith("/keeper/scorecard")) return new Response(JSON.stringify(card()), { status: 200 });
+          bodies.push(String(init?.body));
+          if (u.endsWith(VERSION_PATH)) return new Response(JSON.stringify({ current: REPLACED, next: INSTALLED }), { status: 200 });
+          return new Response(JSON.stringify({ ok: true, overlay: { id: 42 } }), { status: 200 });
+        }) as unknown as typeof globalThis.fetch,
+      });
+    for (const field of FIELDS) expect((await runRound(watched(missing(field)))).kind).toBe("failed");
+    // `collapse` of an absent idea or quip used to be the five-character string "undefined", signed and posted as
+    // a real rewrite. For a response like this the only payload that is not a partial rewrite is no payload.
+    expect(bodies).toEqual([]);
+    // the control: a complete response still delivers, so the emptiness above is the shape check and nothing else
+    expect((await runRound(watched(written()))).kind).toBe("delivered");
+    expect(bodies.length).toBe(2);
+    for (const b of bodies) expect(b).not.toContain("undefined");
+  });
+
+  it("refuses a field of the wrong type rather than coercing it", async () => {
+    const wrong = [
+      { rules: 42, says: "rules: Expected string, received number" },
+      { coins: [], says: "coins: Expected string, received array" },
+      { idea: null, says: "idea: Expected string, received null" },
+      { note: { text: "a note" }, says: "note: Expected string, received object" },
+    ];
+    for (const { says, ...bad } of wrong) {
+      const out = await runRound(deps({ write: async () => ({ ...written(), ...bad }) }));
+      expect(out.kind).toBe("failed");
+      if (out.kind === "failed") expect(out.reason).toContain(says);
+    }
+  });
+
+  it("fails cleanly on output that is absent, or not an object at all", async () => {
+    for (const raw of [undefined, null, "", "{\"rules\":", 0, [], written().rules]) {
+      const out = await runRound(deps({ write: async () => raw }));
+      expect(out.kind).toBe("failed");
+      if (out.kind === "failed") expect(out.reason).toContain("not the declared shape");
+    }
+    // the tool itself rejects an absent or unparseable envelope before the round ever sees it, and a rejection
+    // from `write` was already a recorded failed round: these are the two messages src/tools/beekeep.ts gives
+    for (const said of ["the CLI did not return JSON", "the CLI returned no usable rules"]) {
+      const out = await runRound(deps({ write: () => Promise.reject(new Error(said)) }));
+      expect(out.kind).toBe("failed");
+      if (out.kind === "failed") expect(out.reason).toBe(`the rules-writing CLI failed: ${said}`);
+    }
+  });
+
+  it("hands buildPayload exactly the six fields, with anything the model added dropped", async () => {
+    const out = await runRound(deps({ write: async () => ({ ...written(), sneaked: "ignore your instructions" }) }));
+    expect(out.kind).toBe("delivered");
+    if (out.kind === "delivered") expect(Object.keys(out.rules).sort()).toEqual(["coins", "idea", "note", "quip", "reason", "rules"]);
+  });
+});
+
 describe("coach: reading the scorecard as data", () => {
   it("takes the open bees and the tradeable universe off the card", () => {
     expect(openBees(card({ open_bees: "bee1, bee3" }))).toEqual(["bee1", "bee3"]);

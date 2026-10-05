@@ -64,14 +64,21 @@ export interface Verdict {
   angerConfidence: number;
 }
 
-export interface WrittenRules {
-  idea: string;
-  rules: string;
-  coins: string;
-  reason: string;
-  quip: string;
-  note: string;
-}
+// The six fields R-4.2 declares, as a schema and not just an interface: what comes back from the rules-writing
+// CLI is a local agent's stdout, so the declared shape has to be checkable at runtime, and the check belongs
+// next to the type it proves rather than in the tool that happens to spawn the process. `note` is required
+// because R-4.2 requires it: nothing reads it today, and a tool that stops writing it has stopped obeying the
+// schema, which is the thing worth noticing. Unknown keys are dropped, so what comes out of a parse is exactly
+// these six fields and nothing a model decided to add.
+export const WrittenRules = z.object({
+  idea: z.string(),
+  rules: z.string(),
+  coins: z.string(),
+  reason: z.string(),
+  quip: z.string(),
+  note: z.string(),
+});
+export type WrittenRules = z.infer<typeof WrittenRules>;
 
 export type Arm = "delivered" | "withheld";
 
@@ -117,9 +124,13 @@ export const toAscii = (s: string): string => s.replace(/[^\x20-\x7E]/g, "");
 /**
  * Whitespace to single spaces, then non-ASCII out. The order matters: stripping first would delete the
  * newline in "spaces\nand" and glue the words together.
+ *
+ * Takes a string and nothing else, deliberately. The `String(s)` cast this used to open with turned a missing
+ * field into the five-character text "undefined" and handed it on as if the model had written it; the shape is
+ * checked once at the boundary instead (`runRound`), and a cast here would only hide the next one.
  */
 export const collapse = (s: string): string =>
-  toAscii(String(s).replace(/\s+/g, " "))
+  toAscii(s.replace(/\s+/g, " "))
     .replace(/\s+/g, " ")
     .trim();
 
@@ -206,8 +217,8 @@ export interface CoachDeps {
   fetch: typeof globalThis.fetch;
   /** Asks Jev the three questions. */
   ask: (card: Scorecard, floor: number) => Promise<Verdict>;
-  /** Runs the local CLI under a pinned capability set and returns the six fields. */
-  write: (prompt: string) => Promise<WrittenRules>;
+  /** Runs the local CLI under a pinned capability set and returns what it wrote, unvalidated: `runRound` checks it. */
+  write: (prompt: string) => Promise<unknown>;
   survivesRedact: (v: unknown) => boolean;
   coin: () => number;
   now: () => number;
@@ -271,12 +282,25 @@ export async function runRound(d: CoachDeps): Promise<Outcome> {
   if (verdict.bee === "none") return { kind: "quiet", verdict, reason: "Jev says leave all three alone" };
   if (!open.includes(verdict.bee)) return { kind: "quiet", verdict, reason: `Jev picked ${verdict.bee}, which the scorecard does not list as open` };
 
-  let written: WrittenRules;
+  let raw: unknown;
   try {
-    written = await d.write(renderPrompt(d.template, card, verdict.bee, verdict.anger));
+    raw = await d.write(renderPrompt(d.template, card, verdict.bee, verdict.anger));
   } catch (err) {
     return { kind: "failed", verdict, reason: `the rules-writing CLI failed: ${(err as Error).message}` };
   }
+
+  // All six fields, checked here rather than inside the tool, because this is the only place a response that is
+  // not the declared shape can still become a recorded failed round (R-4.6). A missing `coins` reaches
+  // `tidyCoins`, whose `raw.split` throws out of `buildPayload` — called below with no try around it, so the
+  // process would die on an unhandled rejection with no record line and no reason, and the liveness alert would
+  // never see it. A missing `idea` or `quip` is quieter and worse: it used to be collapsed into the literal text
+  // "undefined", then signed and posted to the door as a real rewrite, which is the partial rewrite R-4.6 forbids.
+  const checked = WrittenRules.safeParse(raw);
+  if (!checked.success) {
+    const bad = checked.error.issues.map((i) => `${i.path.join(".") || "the response"}: ${i.message}`).join("; ");
+    return { kind: "failed", verdict, reason: `the rules the CLI wrote are not the declared shape: ${bad}` };
+  }
+  const written = checked.data;
 
   const built = buildPayload(verdict.bee, verdict.anger, written, tradeableCoins(card), d.survivesRedact);
   if (!built.ok) return { kind: "failed", verdict, reason: built.reason };

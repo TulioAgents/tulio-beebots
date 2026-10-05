@@ -130,6 +130,17 @@ describe("beekeep: the round record", () => {
     expect(JSON.parse(line({ kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" }))).toHaveProperty("verdict", null);
   });
 
+  it("records a round whose CLI answer was the wrong shape as one that could not run (R-4.6)", () => {
+    const shape = { kind: "failed", verdict: verdict(), reason: "the rules the CLI wrote are not the declared shape: coins: Required" } as const;
+    const r = roundRecord(AT, "cron", CONFIG, cfg(), shape);
+    // the reason names the field, and the round is failed rather than quiet: it could not run, it did not choose to
+    expect(r.kind).toBe("failed");
+    if (r.kind === "failed") expect(r.reason).toContain("coins");
+    expect(r).not.toHaveProperty("rules");
+    // so it counts toward the liveness alert exactly like any other failure (R-1.4)
+    expect(shouldAlertOnFailures([line(shape), line(shape), line(shape)], 3)).toBe(true);
+  });
+
   it("records no secret and no signature, for any outcome (R-9.5)", () => {
     const outcomes: Outcome[] = [
       { kind: "delivered", verdict: verdict(), bee: "bee1", arm: "delivered", ...versions, overlayId: 42, status: 200, rules: written() },

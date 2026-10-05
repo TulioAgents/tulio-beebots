@@ -13,7 +13,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { asTrigger, CoachConfig, roundRecord, runRound, shouldAlertOnFailures, type Scorecard, type Verdict, type WrittenRules } from "../coach.js";
+import { asTrigger, CoachConfig, roundRecord, runRound, shouldAlertOnFailures, type Scorecard, type Verdict } from "../coach.js";
 import { redact, safeError } from "../redact.js";
 
 const argv = process.argv.slice(2);
@@ -105,8 +105,12 @@ const SCHEMA = {
  * The capability set is pinned here and deliberately NOT read from config: the prompt carries Hive text
  * typed by strangers (keeper.ts), and this is the only thing standing between that text and a local agent
  * with a filesystem. `--tools ""` would disable the structured-output tool itself, so it is named.
+ *
+ * Reports only an envelope that cannot be read at all. Whether the structured output is the six fields SCHEMA
+ * declares is `runRound`'s check (`WrittenRules` in src/coach.ts), where a bad answer becomes a recorded failed
+ * round instead of an exception thrown out of the top-level await below.
  */
-function writeRules(prompt: string): Promise<WrittenRules> {
+function writeRules(prompt: string): Promise<unknown> {
   const args = ["-p", "--output-format", "json", "--json-schema", JSON.stringify(SCHEMA), "--tools", "StructuredOutput", "--model", cfg.model, prompt];
   return new Promise((resolve, reject) => {
     execFile(
@@ -115,7 +119,7 @@ function writeRules(prompt: string): Promise<WrittenRules> {
       { timeout: cfg.cliTimeoutMs, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } },
       (err, stdout) => {
         if (err) return reject(new Error(safeError(err).message));
-        let env: { structured_output?: WrittenRules; is_error?: boolean; permission_denials?: unknown[] };
+        let env: { structured_output?: unknown; is_error?: boolean; permission_denials?: unknown[] };
         try {
           env = JSON.parse(stdout) as typeof env;
         } catch {
@@ -124,7 +128,7 @@ function writeRules(prompt: string): Promise<WrittenRules> {
         if (env.is_error) return reject(new Error("the CLI reported an error"));
         if (env.permission_denials?.length) return reject(new Error("the CLI tried to use a capability it was not given"));
         const o = env.structured_output;
-        if (!o || typeof o.rules !== "string" || typeof o.reason !== "string") return reject(new Error("the CLI returned no usable rules"));
+        if (!o) return reject(new Error("the CLI returned no usable rules"));
         resolve(o);
       },
     );
