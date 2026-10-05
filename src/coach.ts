@@ -420,3 +420,15 @@ export function shouldAlertOnFailures(lines: readonly string[], alertAfterFailur
     }
   });
 }
+
+/**
+ * The same judgement, made by the round that is failing right now: `linesBefore` is the record file as it stood
+ * before this round, and `record` is the line this round is appending.
+ *
+ * This round's own failure belongs in the window, which is why the fold lives here rather than in the tool.
+ * Counting only the lines already on disk would always be one short — the alert would fire on the round after
+ * the threshold was reached, and on a cause that persists forever that is a whole cron interval of silence.
+ */
+export function shouldAlertOnThisFailure(linesBefore: readonly string[], record: RoundRecord, alertAfterFailures: number): boolean {
+  return shouldAlertOnFailures([...linesBefore, JSON.stringify(record)], alertAfterFailures);
+}

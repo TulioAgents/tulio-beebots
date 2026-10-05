@@ -13,7 +13,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, runRound, shouldAlertOnFailures, type RoundRecord, type Scorecard, type Verdict } from "../coach.js";
+import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, runRound, shouldAlertOnThisFailure, type Outcome, type RoundRecord, type Scorecard, type Verdict } from "../coach.js";
 import { redact, safeError } from "../redact.js";
 
 const argv = process.argv.slice(2);
@@ -53,15 +53,34 @@ const trigger = asTrigger(flag("trigger") ?? process.env.COACH_TRIGGER);
 // a particular time — and on a broken cron that is the only thing distinguishing one tick's record from the next.
 const startedAt = new Date().toISOString();
 
+/**
+ * The one way out of a round that could not run, wherever it gave up: record it, judge the record file with this
+ * round's own line in it, and exit 1 (R-1.2).
+ *
+ * Both ends of the file come through here because a pre-flight failure and a failure inside the round are the
+ * same thing to R-9.4 — a round that could not run — and the pre-flight ones are the causes that repeat on every
+ * single tick. While this exit was a bare `die`, a missing key wrote N identical lines and never once read them.
+ */
+const failRound = (outcome: Extract<Outcome, { kind: "failed" }>): never => {
+  // Read before the append, not after: `shouldAlertOnThisFailure` folds in this round's line itself, so a file
+  // already holding it would count this failure twice and shout one round early.
+  const linesBefore = existsSync(cfg.recordFile) ? readFileSync(cfg.recordFile, "utf8").trim().split("\n") : [];
+  const record = roundRecord(startedAt, trigger, configPath, cfg, outcome);
+  appendRecord(record);
+  // The count and nothing else. A reason can carry whatever the door or the CLI said, and this is the line a log
+  // watcher forwards onward, so it stays a fact about rounds rather than about any one of them (R-9.5, R-1.6).
+  if (shouldAlertOnThisFailure(linesBefore, record, cfg.alertAfterFailures)) {
+    console.error(`ALERT: the last ${cfg.alertAfterFailures} rounds could not run. The Beekeeper is not coaching.`);
+  }
+  return die(`could not run: ${outcome.reason}`);
+};
+
 // Everything the round needs that the config file does not hold. A failure here is recorded like any other round
 // that could not run (R-1.4), as `failed` and never as `quiet` (R-1.5), and still exits 1 (R-1.2).
 const labSecret = process.env.LAB_SECRET ?? "";
 const jevKey = process.env.TYPESAFE_API_KEY ?? "";
 const blocked = preflightFailure(cfg, { labSecret, jevKey, promptFileExists: existsSync(cfg.promptFile) });
-if (blocked) {
-  appendRecord(roundRecord(startedAt, trigger, configPath, cfg, blocked));
-  die(blocked.reason);
-}
+if (blocked) failRound(blocked);
 const template = readFileSync(cfg.promptFile, "utf8");
 
 // ---- Jev: the three questions (beekeeper/jev-questions.md step 3) ----
@@ -166,19 +185,12 @@ const outcome = await runRound({
   now: Date.now,
 });
 
-// ---- record it, secrets and signatures excluded by construction ----
-appendRecord(roundRecord(startedAt, trigger, configPath, cfg, outcome));
+// ---- say what happened, recording it on the way out; secrets and signatures excluded by construction ----
+// A failed round records inside `failRound`, which also evaluates the alert and exits 1. A quiet round records
+// here and exits 0: it chose to leave the bees alone, so it is not a round that could not run (R-1.5, R-9.2).
+if (outcome.kind === "failed") failRound(outcome);
 
-// ---- say what happened, and alert if the coach has been unable to run for a while ----
+appendRecord(roundRecord(startedAt, trigger, configPath, cfg, outcome));
 if (outcome.kind === "delivered") console.log(`delivered: ${outcome.bee} now runs new rules (overlay ${outcome.overlayId ?? "?"}) — "${outcome.rules.idea}"`);
 else if (outcome.kind === "withheld") console.log(`withheld (control arm): ${outcome.bee} keeps its rules — "${outcome.rules.idea}" was written and not sent`);
-else if (outcome.kind === "quiet") console.log(`left them alone: ${outcome.reason}`);
-else console.error(`could not run: ${outcome.reason}`);
-
-if (outcome.kind === "failed") {
-  const lines = existsSync(cfg.recordFile) ? readFileSync(cfg.recordFile, "utf8").trim().split("\n") : [];
-  if (shouldAlertOnFailures(lines, cfg.alertAfterFailures)) {
-    console.error(`ALERT: the last ${cfg.alertAfterFailures} rounds could not run. The Beekeeper is not coaching.`);
-  }
-  process.exit(1);
-}
+else console.log(`left them alone: ${outcome.reason}`);

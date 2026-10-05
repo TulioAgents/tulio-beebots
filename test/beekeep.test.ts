@@ -3,7 +3,7 @@
 // inside src/tools/beekeep.ts where nothing can reach them.
 // See docs/ears/local-beekeeper.md units 1 and 9.
 import { describe, expect, it } from "vitest";
-import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, shouldAlertOnFailures, type Outcome, type PreflightInputs, type Verdict, type WrittenRules } from "../src/coach.js";
+import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, shouldAlertOnFailures, shouldAlertOnThisFailure, type Outcome, type PreflightInputs, type RoundRecord, type Verdict, type WrittenRules } from "../src/coach.js";
 
 // The real thing is 48 hex characters, which is also exactly what the redactor reads as a secret.
 const LAB_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -296,5 +296,65 @@ describe("beekeep: the alert for rounds that could not run", () => {
     expect(shouldAlertOnFailures([failed, failed, '{"kind":"fail'], 3)).toBe(false);
     expect(shouldAlertOnFailures(['{"kind":"fail', failed, failed, failed], 3)).toBe(true);
     expect(shouldAlertOnFailures(["not json at all", "", "   "], 3)).toBe(false);
+  });
+});
+
+// The round deciding whether to shout is itself one of the rounds being counted, and its line is not on disk
+// when the file is read. A pre-flight failure is the case that matters: those repeat identically on every tick,
+// so they are the ones that reach the threshold, and until this fold existed that exit never evaluated it at all.
+// See docs/ears/local-beekeeper.md R-9.4.
+describe("beekeep: the alert raised by the round that could not run", () => {
+  const ready: PreflightInputs = { labSecret: LAB_SECRET, jevKey: "jev-key-xyz", promptFileExists: true };
+  /** This round's record, as the tool builds it before appending. */
+  const record = (outcome: Outcome): RoundRecord => roundRecord(AT, "cron", CONFIG, cfg(), outcome);
+  /** A pre-flight failure: what a missing key or a deleted template records, every tick, forever. */
+  const preflight = (over: Partial<PreflightInputs> = { jevKey: "" }) => preflightFailure(cfg(), { ...ready, ...over })!;
+  const noKey = record(preflight());
+  const noKeyLine = JSON.stringify(noKey);
+  const inRound = record({ kind: "failed", verdict: null, reason: "scorecard answered 503" });
+  const quietLine = JSON.stringify(record({ kind: "quiet", verdict: null, reason: "no bee is open for a rewrite" }));
+
+  it("fires once the configured number of pre-flight failures is reached, which it could not when that exit never looked", () => {
+    expect(shouldAlertOnThisFailure([noKeyLine, noKeyLine], noKey, 3)).toBe(true);
+    const deleted = record(preflight({ promptFileExists: false }));
+    expect(shouldAlertOnThisFailure([JSON.stringify(deleted), JSON.stringify(deleted)], deleted, 3)).toBe(true);
+  });
+
+  it("counts the round doing the counting, so it fires on the round that reaches the threshold and not the one after", () => {
+    // Two on disk plus this one is three. The file is read before this round's line is appended, so folding it
+    // in is the whole point: without it the third failing round sees only two and the alert arrives a tick late.
+    expect(shouldAlertOnFailures([noKeyLine, noKeyLine], 3)).toBe(false);
+    expect(shouldAlertOnThisFailure([noKeyLine, noKeyLine], noKey, 3)).toBe(true);
+    // and it is counted once, not twice: one failure on disk and this one is two, which is still short of three
+    expect(shouldAlertOnThisFailure([noKeyLine], noKey, 3)).toBe(false);
+  });
+
+  it("does not fire one short of the configured number", () => {
+    expect(shouldAlertOnThisFailure([noKeyLine], noKey, 3)).toBe(false);
+    expect(shouldAlertOnThisFailure([], noKey, 3)).toBe(false);
+    expect(shouldAlertOnThisFailure([noKeyLine, noKeyLine, noKeyLine], noKey, 5)).toBe(false);
+  });
+
+  it("is silenced by a round that chose to leave the bees alone (R-1.5, R-9.2)", () => {
+    // A quiet round ran. It is not a round that could not run, so it breaks the streak wherever it sits.
+    expect(shouldAlertOnThisFailure([noKeyLine, quietLine], noKey, 3)).toBe(false);
+    expect(shouldAlertOnThisFailure([quietLine, noKeyLine], noKey, 3)).toBe(false);
+    expect(shouldAlertOnThisFailure([quietLine, noKeyLine, noKeyLine], noKey, 3)).toBe(true);
+  });
+
+  it("treats a pre-flight failure and a failure inside the round as the same streak", () => {
+    // Both are rounds that could not run, and a cause can move between them: the key goes missing for two ticks,
+    // then is set and the door refuses. Counting them apart would silence the alert on the mixed window.
+    expect(shouldAlertOnThisFailure([noKeyLine, JSON.stringify(inRound)], noKey, 3)).toBe(true);
+    expect(shouldAlertOnThisFailure([JSON.stringify(inRound), noKeyLine], inRound, 3)).toBe(true);
+    expect(shouldAlertOnThisFailure([noKeyLine, noKeyLine], inRound, 3)).toBe(true);
+  });
+
+  it("records no secret in the line it folds in, and says nothing of any reason when it shouts (R-9.5, R-1.6)", () => {
+    // The ALERT text the tool prints is the count and nothing else, so the only thing this fold can leak is the
+    // record it builds — and the pre-flight checks are the only code that reads the secret before deciding.
+    const json = JSON.stringify(record(preflight({ labSecret: LAB_SECRET.slice(0, 20) })));
+    expect(json).not.toContain(LAB_SECRET.slice(0, 8));
+    expect(json).not.toMatch(/[0-9a-fA-F]{32,}/);
   });
 });
