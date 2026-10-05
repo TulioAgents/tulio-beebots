@@ -8,3 +8,8 @@ data/
 *.sqlite-*
 .DS_Store
 .gstack/
+
+graphify-out/
+.devlocal/
+
+*/.headroom_*
