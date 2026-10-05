@@ -3,12 +3,25 @@
 > Revised after the `uncle-senior` review. The first draft's Unit 1 (HTTP service, loopback bind,
 > concurrency refusal, health endpoint) is withdrawn with the service itself; Unit 7 is rebuilt around a
 > randomised control arm instead of rollback thresholds; Unit 4's two-CLI requirement is reduced to one.
-> **Status: units 1-9 are implemented** in `src/coach.ts` (round logic, pure and testable) and
-> `src/tools/beekeep.ts` (config, Jev questions, CLI adapter, round record), covered by
-> `test/coach.test.ts` — 24 tests including four that deliver through a real `LabDoor` over HTTP.
-> Known gap: R-4.5 is only partly enforceable. The CLI envelope reports `permission_denials`, not a list of
-> capabilities used, so an attempt is detectable but a successful unexpected use is not. The real control is
-> R-4.3/R-4.4: the tool set is pinned in code and cannot come from config.
+> **Status: units 1-9 are implemented** in `src/coach.ts` (round logic and every pure decision, including the
+> round record, the pre-flight check and the liveness fold) and `src/tools/beekeep.ts` (argv, env, file I/O,
+> the Jev questions, the CLI adapter, the exit code), covered by `test/coach.test.ts`, `test/beekeep.test.ts`
+> and the integration cases in `test/keeper-http.test.ts` that run a real round against a real `Engine` and
+> `LabDoor` over HTTP.
+>
+> This status line previously claimed all nine units while seven requirements were unmet across units 1, 3, 4,
+> 7 and 9 — every one of them in `src/tools/beekeep.ts`, which nothing imported and no test covered. They were
+> closed by `docs/tasks/local-beekeeper.md`; a header saying IMPLEMENTED is worth only as much as the test that
+> would fail without it.
+>
+> Known gaps, both deliberate:
+> - R-4.5 is only partly enforceable. The CLI envelope reports `permission_denials`, not a list of capabilities
+>   used, so an attempt is detectable but a successful unexpected use is not. The real control is R-4.3/R-4.4:
+>   the tool set is pinned in code and cannot come from config.
+> - R-1.4 and R-9.4 do not reach a missing or unparseable config file. `recordFile` is a field of the config
+>   that failed to parse, so that round writes no line and cannot be counted. Recording it would mean putting
+>   `cli`, `model` and `control` in the audit file from a config that did not validate, which is the fallback
+>   R-8.3 forbids. A cron pointing at a deleted config is therefore visible only on stderr.
 
 ## Unit 1: Round execution — IMPLEMENTED
 

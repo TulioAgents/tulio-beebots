@@ -70,7 +70,7 @@
     `pickArm`, so a test asserts both arms make the identical preview call.
   - landed: 9eb643c — src/coach.ts, test/coach.test.ts, test/beekeep.test.ts, test/keeper-http.test.ts, beekeeper/LOCAL.md
 
-- [ ] 9.3 Alert on consecutive rounds that could not run, including pre-flight failures (deps: 1.1, est: ~20m) (mutex: round-record)
+- [x] 9.3 Alert on consecutive rounds that could not run, including pre-flight failures (deps: 1.1, est: ~20m) (mutex: round-record)
   - why: the alert at `src/tools/beekeep.ts:157-163` counts `kind === "failed"` lines in the record file. The
     failures that persist across every single cron tick — a missing `TYPESAFE_API_KEY`, a deleted prompt
     template — currently write no line at all, so the one condition the alert exists to catch is the one
@@ -85,7 +85,7 @@
   - verify: a test seeds `alertAfterFailures` records of pre-flight failures and asserts the alert fires; a
     test interleaves one quiet round and asserts it does not; a test asserts the alert does not fire at
     `n - 1`.
-  - landed:
+  - landed: 2a7c095 — src/coach.ts, src/tools/beekeep.ts, test/beekeep.test.ts, beekeeper/LOCAL.md
 
 ## Unit 1: Round execution
 
@@ -131,5 +131,6 @@
 Units 2, 5, 6 and 8 are met. R-4.5 infers "used a capability beyond structured output" from
 `permission_denials.length`, which reports denied rather than granted use — adequate while `--tools
 StructuredOutput` is pinned in code, and not worth a story until that pin moves. The spec headers in
-`docs/ears/local-beekeeper.md` claim all nine units IMPLEMENTED and should be corrected to match reality as
-each story lands, not before.
+`docs/ears/local-beekeeper.md` claimed all nine units IMPLEMENTED while seven requirements were unmet; the
+status block is now corrected, and records the two gaps that remain by choice (R-4.5's capability reporting,
+and R-1.4/R-9.4 not reaching a missing config file).
