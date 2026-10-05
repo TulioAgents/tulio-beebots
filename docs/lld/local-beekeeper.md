@@ -103,6 +103,7 @@ prose. Pinning `--tools` is also the mitigation for pre-mortem risk 3 — Hive t
 | Sanitise before signing | Verified necessary: codex emitted non-ASCII against an explicit instruction, and a schema cannot express a charset. The door does not check charset either. | Trust the schema |
 | Reject locally what the door would reject | A `400` burns the round and the bee's 20-hour window | Let the door arbitrate |
 | Hard-fail on a missing `LAB_SECRET` | A coach that quietly does nothing is indistinguishable from one that chose to | Warn and continue |
+| A pre-flight failure records; a config that will not parse does not | `preflightFailure` (`src/coach.ts`) runs with a validated config, so a missing `LAB_SECRET`, key or prompt template appends a `failed` round and the liveness alert can finally see the failures that repeat on every tick. A config that is missing or invalid is the one unrecordable case: `recordFile` is a field inside it, and there is no honest `cli`, `model` or `control` for a line either. stderr and exit 1 is the whole behaviour there | Record every path, reading `recordFile` out of a config that did not validate |
 
 ## Deferred
 

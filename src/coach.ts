@@ -10,7 +10,7 @@
 // Every guard that matters lives in the engine (lab/door.ts): this is an untrusted client of a validated
 // door. Nothing here can reach leverage, stops, sizing, caps or the mode.
 import { z } from "zod";
-import { labSignature } from "./lab/door.js";
+import { LAB_MIN_SECRET, labSignature } from "./lab/door.js";
 
 export const OVERLAY_PATH = "/lab/overlay";
 /** The engine's read-only ruleset-version preview (keeper-http.ts). Asked on both arms, so it must change nothing. */
@@ -112,6 +112,51 @@ export type Outcome =
   | { kind: "quiet"; verdict: Verdict | null; reason: string }
   /** The round could not run. Never to be confused with "quiet". */
   | { kind: "failed"; verdict: Verdict | null; reason: string };
+
+// ---------- before the round starts ----------
+
+/** What the tool has already read from the environment and the filesystem, since none of it is knowable here. */
+export interface PreflightInputs {
+  labSecret: string;
+  jevKey: string;
+  /** Whether `cfg.promptFile` is there. The tool looks; this only decides what that means. */
+  promptFileExists: boolean;
+}
+
+/**
+ * Why this round cannot start, as the outcome it will be recorded under, or null when it can.
+ *
+ * These checks used to be stderr and an exit code only, which left the failures that repeat on every single cron
+ * tick — a key that was never exported, a prompt template someone deleted — writing no line at all. R-1.4 says a
+ * round that ends for any reason records its reason, and the liveness alert counts `failed` lines, so the one
+ * condition R-9.4 exists to catch was the one condition it could not see.
+ *
+ * Returns the whole outcome rather than a bare string so that the thing R-1.5 turns on is decided here, where a
+ * test can reach it: a round that could not run is `failed` and never `quiet`. `verdict` is null because Jev is
+ * asked inside the round and this runs before it — an absent answer is not a low-confidence one.
+ *
+ * R-1.6: a reason names the problem and never the value. "Not set" and "shorter than 32" are facts about the
+ * environment rather than about the secret; the actual length would narrow a guess at it, so it is not recorded.
+ */
+export function preflightFailure(cfg: CoachConfig, inputs: PreflightInputs): Extract<Outcome, { kind: "failed" }> | null {
+  const failed = (reason: string): Extract<Outcome, { kind: "failed" }> => ({ kind: "failed", verdict: null, reason });
+  if (!inputs.labSecret) return failed("LAB_SECRET is not set: without it the engine's door cannot be opened");
+  if (inputs.labSecret.length < LAB_MIN_SECRET) return failed(`LAB_SECRET is shorter than the ${LAB_MIN_SECRET} characters the engine's door requires`);
+  if (!inputs.jevKey) return failed("TYPESAFE_API_KEY is not set: Jev has to be asked which bee is broken");
+  if (!inputs.promptFileExists) return failed(`no prompt template at ${cfg.promptFile}`);
+  return null;
+}
+
+/**
+ * The config error the tool prints, one line per issue and each naming its field (R-8.3): the operator fixing it
+ * is reading stderr and nothing else.
+ *
+ * Stderr really is all there is for this one. `recordFile` is a field of the config that just failed to parse, so
+ * a round that dies here has nowhere to append and no honest `cli`, `model` or `control` to put in a line — and
+ * inventing them, or trusting them out of a config that did not validate, is the fallback R-8.3 forbids. It is
+ * the only round that ends without a record; every check below it has a parsed config and writes one.
+ */
+export const configProblems = (issues: readonly z.ZodIssue[]): string => issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("\n  ");
 
 // ---------- pure helpers ----------
 

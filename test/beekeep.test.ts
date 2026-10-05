@@ -3,7 +3,7 @@
 // inside src/tools/beekeep.ts where nothing can reach them.
 // See docs/ears/local-beekeeper.md units 1 and 9.
 import { describe, expect, it } from "vitest";
-import { asTrigger, roundRecord, shouldAlertOnFailures, type CoachConfig, type Outcome, type Verdict, type WrittenRules } from "../src/coach.js";
+import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, shouldAlertOnFailures, type Outcome, type PreflightInputs, type Verdict, type WrittenRules } from "../src/coach.js";
 
 // The real thing is 48 hex characters, which is also exactly what the redactor reads as a secret.
 const LAB_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -148,6 +148,9 @@ describe("beekeep: the round record", () => {
       { kind: "quiet", verdict: verdict({ bee: "none" }), reason: "Jev says leave all three alone" },
       // the door's own refusal text is echoed into the reason, so it is the likeliest carrier
       { kind: "failed", verdict: verdict(), reason: "the door refused the rewrite: 401 bad signature" },
+      // and the pre-flight checks, which are the only code that reads the secret before deciding anything
+      preflightFailure(cfg(), { labSecret: LAB_SECRET.slice(0, 20), jevKey: "jev-key", promptFileExists: true })!,
+      preflightFailure(cfg(), { labSecret: "", jevKey: "", promptFileExists: true })!,
     ];
     for (const o of outcomes) {
       const json = line(o);
@@ -158,6 +161,93 @@ describe("beekeep: the round record", () => {
       // and the two ruleset versions are still there: at 16 hex they sit under that rule rather than bending it
       if ("installedVersion" in o) expect(json).toContain(`"replacedVersion":"${REPLACED}","installedVersion":"${INSTALLED}"`);
     }
+  });
+});
+
+// A round can also end before the round loop ever starts, and those are the failures that repeat on every cron
+// tick rather than once: an unexported key or a deleted prompt template fails identically forever.
+// See docs/ears/local-beekeeper.md unit 1.
+describe("beekeep: a round that could not start", () => {
+  const ready: PreflightInputs = { labSecret: LAB_SECRET, jevKey: "jev-key-xyz", promptFileExists: true };
+  const blocked = (over: Partial<PreflightInputs>) => preflightFailure(cfg(), { ...ready, ...over })!;
+  /** The record-file line the tool appends for a pre-flight failure. */
+  const blockedLine = (over: Partial<PreflightInputs>) => JSON.stringify(roundRecord(AT, "cron", CONFIG, cfg(), blocked(over)));
+
+  it("lets the round start when the secret, the key and the prompt template are all there", () => {
+    expect(preflightFailure(cfg(), ready)).toBeNull();
+  });
+
+  it("records an absent LAB_SECRET as a round that could not run (R-1.3, R-1.4)", () => {
+    const o = blocked({ labSecret: "" });
+    expect(o.kind).toBe("failed");
+    expect(o.reason).toContain("LAB_SECRET");
+    expect(o.reason).toContain("not set");
+    expect(JSON.parse(blockedLine({ labSecret: "" }))).toMatchObject({ at: AT, trigger: "cron", kind: "failed", verdict: null });
+  });
+
+  it("records a short LAB_SECRET without recording the secret, a piece of it, or its length (R-1.6)", () => {
+    const short = LAB_SECRET.slice(0, 31);
+    const o = blocked({ labSecret: short });
+    expect(o.reason).toContain("LAB_SECRET");
+    expect(o.reason).toContain("shorter than");
+    const json = blockedLine({ labSecret: short });
+    expect(json).not.toContain(short);
+    // not even a prefix: the first few characters are as much of a secret as all of it
+    expect(json).not.toContain(short.slice(0, 8));
+    expect(json).not.toMatch(/[0-9a-fA-F]{32,}/);
+    // and not the length either, which would narrow a guess at the value the operator actually set
+    expect(json).not.toContain("31");
+    // the bound it failed is the door's own, so the reason names that and nothing about the secret
+    expect(o.reason).toContain("32");
+  });
+
+  it("records an absent TYPESAFE_API_KEY, which is the failure that repeats on every tick (R-1.4)", () => {
+    const o = blocked({ jevKey: "" });
+    expect(o.kind).toBe("failed");
+    expect(o.reason).toContain("TYPESAFE_API_KEY");
+    // so it counts toward the liveness alert like any failure inside the round, which it could not when it
+    // wrote no line at all (R-9.4)
+    const l = blockedLine({ jevKey: "" });
+    expect(shouldAlertOnFailures([l, l, l], 3)).toBe(true);
+  });
+
+  it("records a missing prompt template, naming the path it looked at", () => {
+    const o = preflightFailure(cfg({ promptFile: "beekeeper/deleted-prompt.txt" }), { ...ready, promptFileExists: false })!;
+    expect(o.kind).toBe("failed");
+    expect(o.reason).toContain("beekeeper/deleted-prompt.txt");
+  });
+
+  it("never records a round that could not start as one that chose to do nothing (R-1.5)", () => {
+    const causes: Array<Partial<PreflightInputs>> = [{ labSecret: "" }, { labSecret: "too-short" }, { jevKey: "" }, { promptFileExists: false }];
+    for (const over of causes) {
+      const o = blocked(over);
+      expect(o.kind).toBe("failed");
+      expect(o.kind).not.toBe("quiet");
+      // and no verdict is invented for a round that ended before Jev was asked
+      expect(o.verdict).toBeNull();
+      expect(JSON.parse(blockedLine(over))).toHaveProperty("kind", "failed");
+    }
+    // the liveness alert reads that word and nothing else, so "quiet" here would silence it outright
+    expect(shouldAlertOnFailures(causes.map(blockedLine), 4)).toBe(true);
+  });
+
+  it("names the secret first, so a run with nothing set at all reports the door rather than the prompt", () => {
+    expect(blocked({ labSecret: "", jevKey: "", promptFileExists: false }).reason).toContain("LAB_SECRET");
+  });
+
+  it("still lists every config problem readably, for the one round it cannot record (R-8.3)", () => {
+    // A config that does not parse holds no `recordFile` to append to and no honest cli, model or control to put
+    // in a line, and reading them out of it anyway is the fallback R-8.3 forbids. So this path keeps stderr and
+    // exit 1 — `preflightFailure` cannot even be called without a config that validated.
+    const bad = CoachConfig.safeParse({ engineUrl: "http://127.0.0.1:8080", cli: "codex" });
+    expect(bad.success).toBe(false);
+    const text = bad.success ? "" : configProblems(bad.error.issues);
+    // one line per field, each naming its field: what the operator fixing it is reading
+    expect(text.split("\n").length).toBeGreaterThan(1);
+    expect(text).toContain("cli: ");
+    expect(text).toContain("recordFile: ");
+    expect(text).toContain("promptFile: ");
+    expect(text).toContain("alertAfterFailures: ");
   });
 });
 

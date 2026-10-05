@@ -13,7 +13,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { asTrigger, CoachConfig, roundRecord, runRound, shouldAlertOnFailures, type Scorecard, type Verdict } from "../coach.js";
+import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, runRound, shouldAlertOnFailures, type RoundRecord, type Scorecard, type Verdict } from "../coach.js";
 import { redact, safeError } from "../redact.js";
 
 const argv = process.argv.slice(2);
@@ -32,18 +32,36 @@ const die: (msg: string) => never = (msg) => {
 const configPath = flag("config") ?? process.env.COACH_CONFIG ?? "beekeeper/coach.json";
 if (!existsSync(configPath)) die(`no config at ${configPath}. Copy beekeeper/coach.example.json and edit it.`);
 const parsed = CoachConfig.safeParse(JSON.parse(readFileSync(configPath, "utf8")));
-if (!parsed.success) die(`${configPath} is not valid:\n  ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("\n  ")}`);
+// The one round that ends without a record: `recordFile` is a field of the config that just failed to parse.
+if (!parsed.success) die(`${configPath} is not valid:\n  ${configProblems(parsed.error.issues)}`);
 const cfg = parsed.data;
+
+/** One record line, appended. A record that cannot be written is reported, never thrown: the round still happened. */
+const appendRecord = (record: RoundRecord): void => {
+  try {
+    appendFileSync(cfg.recordFile, `${JSON.stringify(record)}\n`);
+  } catch (err) {
+    console.error(`could not append to ${cfg.recordFile}: ${safeError(err).message}`);
+  }
+};
 
 // How this process was started. The round itself cannot know it, so it is sourced here and recorded as
 // metadata: cron ticks are the rounds the experiment rests on, hand-run ones are the ones being debugged.
 const trigger = asTrigger(flag("trigger") ?? process.env.COACH_TRIGGER);
 
+// Stamped before the pre-flight checks, because a round that dies in them is still a round that was attempted at
+// a particular time — and on a broken cron that is the only thing distinguishing one tick's record from the next.
+const startedAt = new Date().toISOString();
+
+// Everything the round needs that the config file does not hold. A failure here is recorded like any other round
+// that could not run (R-1.4), as `failed` and never as `quiet` (R-1.5), and still exits 1 (R-1.2).
 const labSecret = process.env.LAB_SECRET ?? "";
-if (labSecret.length < 32) die("LAB_SECRET must be set and at least 32 characters. Without it the engine's door cannot be opened.");
 const jevKey = process.env.TYPESAFE_API_KEY ?? "";
-if (!jevKey) die("TYPESAFE_API_KEY is not set: Jev has to be asked which bee is broken.");
-if (!existsSync(cfg.promptFile)) die(`no prompt template at ${cfg.promptFile}`);
+const blocked = preflightFailure(cfg, { labSecret, jevKey, promptFileExists: existsSync(cfg.promptFile) });
+if (blocked) {
+  appendRecord(roundRecord(startedAt, trigger, configPath, cfg, blocked));
+  die(blocked.reason);
+}
 const template = readFileSync(cfg.promptFile, "utf8");
 
 // ---- Jev: the three questions (beekeeper/jev-questions.md step 3) ----
@@ -136,7 +154,6 @@ function writeRules(prompt: string): Promise<unknown> {
 }
 
 // ---- run it ----
-const startedAt = new Date().toISOString();
 const outcome = await runRound({
   cfg,
   template,
@@ -150,12 +167,7 @@ const outcome = await runRound({
 });
 
 // ---- record it, secrets and signatures excluded by construction ----
-const record = roundRecord(startedAt, trigger, configPath, cfg, outcome);
-try {
-  appendFileSync(cfg.recordFile, `${JSON.stringify(record)}\n`);
-} catch (err) {
-  console.error(`could not append to ${cfg.recordFile}: ${safeError(err).message}`);
-}
+appendRecord(roundRecord(startedAt, trigger, configPath, cfg, outcome));
 
 // ---- say what happened, and alert if the coach has been unable to run for a while ----
 if (outcome.kind === "delivered") console.log(`delivered: ${outcome.bee} now runs new rules (overlay ${outcome.overlayId ?? "?"}) — "${outcome.rules.idea}"`);

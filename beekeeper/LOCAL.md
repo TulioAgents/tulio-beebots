@@ -74,6 +74,11 @@ Four outcomes land in `recordFile`:
 | `quiet` | the round ran and chose to change nothing (no open bee, Jev said none, or Jev was unsure) |
 | `failed` | the round could not run. Not the same as `quiet` |
 
+A round that never got started lands there too: no `LAB_SECRET`, a `LAB_SECRET` under 32 characters, no
+`TYPESAFE_API_KEY`, a deleted `promptFile`. Those are the failures that repeat on every single tick, so they
+are the ones worth seeing in the file. The exception is a config file that is missing or will not parse —
+`recordFile` is a field inside it, so that one can only go to stderr and exit 1.
+
 ```bash
 jq -r '[.at, .kind, (.bee // "-"), (.reason // .rules.idea)] | @tsv' data/beekeeper-rounds.jsonl | column -t
 jq -r 'select(.kind=="failed") | .reason' data/beekeeper-rounds.jsonl | sort | uniq -c
