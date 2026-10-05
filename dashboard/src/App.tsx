@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BeeColumn, money } from "./BeeColumn";
 import { Header } from "./Header";
 import { unlockAudio } from "./sound";
 import { Ticker } from "./Ticker";
 import { Toasts } from "./Toasts";
+import { buildTrades, Trades } from "./Trades";
 import { BEE_META, BEE_NAMES } from "./types";
 import { useFeed } from "./useFeed";
 
@@ -49,6 +50,7 @@ export function App() {
   const baseline = feed.snap?.startEquityUsd ?? 333;
   const stalled = feed.lastEventAt > 0 && Date.now() - feed.lastEventAt > 15_000;
   const blocked = feed.snap?.market.spreadBlocked ?? [];
+  const trades = useMemo(() => buildTrades(feed.fills), [feed.fills]);
 
   return (
     <div className="app">
@@ -106,6 +108,7 @@ export function App() {
           )}
         </aside>
       </main>
+      <Trades trades={trades} bees={feed.bees} now={Date.now()} />
       <Toasts toasts={feed.toasts} />
     </div>
   );

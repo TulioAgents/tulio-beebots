@@ -1600,3 +1600,140 @@ textarea.setup-input {
   border-radius: 50%;
   object-fit: cover;
 }
+
+/* ---------- positions & trades ---------- */
+.trades {
+  --trade-cols: 6.5rem 6rem 5rem 5.5rem 10.5rem 5.5rem 1fr 6rem 6rem;
+  flex: 0 0 auto;
+  max-height: 13rem;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0.5rem;
+}
+.trades-empty {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.85rem;
+}
+.trade-headings {
+  display: grid;
+  grid-template-columns: var(--trade-cols);
+  gap: 0.6rem;
+  padding: 0 0.2rem 0.3rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.trade-list {
+  scrollbar-gutter: stable;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+.trade {
+  display: grid;
+  grid-template-columns: var(--trade-cols);
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.38rem 0.2rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.trade:last-child {
+  border-bottom: 0;
+}
+.trade.live {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bee) 10%, transparent), transparent 40%);
+}
+.trade-bee {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+}
+.trade-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--bee);
+  flex: 0 0 auto;
+}
+.trade .side {
+  font-size: 0.78rem;
+}
+.trade-coin {
+  font-size: 0.95rem;
+}
+.trade-size,
+.trade-fee,
+.trade-net {
+  text-align: right;
+}
+.trade-net {
+  font-weight: 700;
+}
+.trade-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--bee);
+  color: var(--bee);
+}
+
+/* Column headings explain themselves on hover or keyboard focus: these words are jargon on first meeting. */
+.trade-headings .th {
+  position: relative;
+  cursor: help;
+  border-bottom: 1px dotted var(--axis);
+  justify-self: start;
+}
+.trade-size.th,
+.trade-fee.th,
+.trade-net.th {
+  justify-self: end;
+}
+.trade-headings .th:focus-visible {
+  outline: 2px solid var(--breezy);
+  outline-offset: 2px;
+}
+.trade-headings .th::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 0.55rem);
+  left: 0;
+  z-index: 40;
+  width: 20rem;
+  max-width: 40vw;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--card-2);
+  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.55);
+  color: var(--text-2);
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.45;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+}
+.trade-net.th::after,
+.trade-fee.th::after {
+  left: auto;
+  right: 0;
+}
+.trade-headings .th:hover::after,
+.trade-headings .th:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}

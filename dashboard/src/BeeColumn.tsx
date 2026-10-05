@@ -6,7 +6,7 @@ const CAP_LABEL: Record<string, string> = { trade_cap: "BENCHED", fee_budget: "B
 
 export const money = (x: number, d = 2) => `${x < 0 ? "−" : ""}$${Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 export const signed = (x: number, d = 2) => `${x >= 0 ? "+" : "−"}$${Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d })}`;
-const px = (x: number | null | undefined) =>
+export const px = (x: number | null | undefined) =>
   x === null || x === undefined ? "–" : x >= 1000 ? x.toLocaleString("en-US", { maximumFractionDigits: 1 }) : x >= 1 ? x.toFixed(3) : x.toPrecision(4);
 
 function Delta({ usd, pct }: { usd: number; pct?: number }) {

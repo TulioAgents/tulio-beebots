@@ -2,7 +2,7 @@ import { signed } from "./BeeColumn";
 import { BEE_META } from "./types";
 import type { Toast } from "./useFeed";
 
-const PURPOSE: Record<string, string> = {
+export const PURPOSE: Record<string, string> = {
   open: "opened",
   add: "added",
   take_profit: "took profit",

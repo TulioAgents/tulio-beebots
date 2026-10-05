@@ -3,6 +3,7 @@ import { playOrder } from "./sound";
 import type { AnyEvent, BeeName, CapEvent, DecisionEvent, FillEvent, FundingEvent, PublicBee, Snapshot } from "./types";
 
 const MAX_DECISIONS = 60;
+const MAX_FILLS = 200;
 const MAX_POINTS = 1500;
 const CURVE_STEP_MS = 10_000;
 
@@ -17,6 +18,8 @@ export interface FeedState {
   bees: Partial<Record<BeeName, PublicBee>>;
   curves: Partial<Record<BeeName, Curve>>;
   decisions: DecisionEvent[];
+  /** Every fill in the window, oldest first: the Positions & trades panel pairs these into trades. */
+  fills: FillEvent[];
   toasts: Toast[];
   flashes: Partial<Record<BeeName, { kind: "fill" | "funding" | "cap"; at: number; text: string }>>;
   connected: boolean;
@@ -54,7 +57,8 @@ function reduce(s: FeedState, a: Action): FeedState {
       return { ...s, curves: { ...a.curves } };
     case "history": {
       const decisions = a.events.filter((e): e is DecisionEvent => e.type === "decision").reverse().slice(0, MAX_DECISIONS);
-      return { ...s, decisions };
+      const fills = a.events.filter((e): e is FillEvent => e.type === "fill").slice(-MAX_FILLS);
+      return { ...s, decisions, fills };
     }
     case "connected":
       return { ...s, connected: a.on };
@@ -84,6 +88,7 @@ function reduce(s: FeedState, a: Action): FeedState {
           toastId = Math.max(toastId + 1, now);
           return {
             ...base,
+            fills: [...s.fills, f].slice(-MAX_FILLS),
             toasts: [...s.toasts, { ...f, id: toastId }].slice(-3),
             flashes: { ...s.flashes, [f.bee]: { kind: "fill", at: now, text: f.label } },
           };
@@ -105,7 +110,7 @@ function reduce(s: FeedState, a: Action): FeedState {
   }
 }
 
-const initial: FeedState = { snap: null, bees: {}, curves: {}, decisions: [], toasts: [], flashes: {}, connected: false, lastEventAt: 0, decisionTimes: [] };
+const initial: FeedState = { snap: null, bees: {}, curves: {}, decisions: [], fills: [], toasts: [], flashes: {}, connected: false, lastEventAt: 0, decisionTimes: [] };
 
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(path, { cache: "no-store" });
