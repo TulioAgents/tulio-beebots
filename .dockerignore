@@ -11,5 +11,6 @@ data
 docs
 test
 strategies
+beekeeper
 dashboard
 !dashboard/public/bees

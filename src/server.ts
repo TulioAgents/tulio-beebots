@@ -1,12 +1,17 @@
 // Read-only HTTP: GET /events (SSE), /snapshot, /history?n=, /equity?days=, /visit, /health, /profile, /bee-image/<bee>.
 // Never config or keys. The exceptions: /setup/*, which only exists before first-run Setup is done (setup.ts), and
 // POST /hive/join and /hive/leave, which need the owner password (gate.ts, hive.ts). GET /hive/status is public and holds no key.
+// The Beekeeper (keeper.ts, docs/BEEKEEPER.md): GET /keeper/scorecard is public; POST /keeper/connect, /keeper/disconnect,
+// /keeper/round and /keeper/rollback need the owner password (keeper-http.ts); POST /lab/overlay needs a round key
+// (lab/door.ts) and can only change one bee's rules text and coin list.
 // /visit is the page's hit counter: it bumps a total and returns it (see visitors.ts; no IP is stored or logged).
 import { createReadStream } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { Db } from "./db.js";
 import type { EventBus } from "./events.js";
 import type { Hive } from "./hive.js";
+import type { KeeperHttp } from "./keeper-http.js";
+import { handleLab, type LabDoor } from "./lab/door.js";
 import { log } from "./log.js";
 import { redact } from "./redact.js";
 import type { Setup } from "./setup.js";
@@ -27,6 +32,10 @@ export interface ServerDeps {
   setup?: Setup;
   /** Present once trading: join/leave the Hive (owner password) and its public status. */
   hive?: Hive;
+  /** Present once trading: the Beekeeper's routes, and its block of /snapshot. */
+  keeper?: Pick<KeeperHttp, "handle" | "publicState">;
+  /** Present once trading: the door a Beekeeper rewrite comes through. Absent = every /lab path is a 404. */
+  lab?: LabDoor | null;
   /** Names, styles and portraits of the bees, for the dashboard. No secrets. */
   profile: () => unknown;
   /** File path of a bee's generated portrait, or null. */
@@ -66,6 +75,16 @@ export function startServer(deps: ServerDeps, port: number, bind: string): Serve
         .catch(() => json(res, 500, { error: "hive request failed" }));
       return;
     }
+    if (handleLab(req, res, url, deps.lab ?? null)) return;
+    if (deps.keeper && url.pathname.startsWith("/keeper/")) {
+      void deps.keeper
+        .handle(req, res, url.pathname)
+        .then((handled) => {
+          if (!handled) json(res, 404, { error: "not found" });
+        })
+        .catch(() => json(res, 500, { error: "beekeeper request failed" }));
+      return;
+    }
     if (req.method !== "GET") return json(res, 405, { error: "read-only" });
     if (url.pathname === "/setup/status") return json(res, 200, { needed: false });
 
@@ -90,7 +109,7 @@ export function startServer(deps: ServerDeps, port: number, bind: string): Serve
         return json(res, h.ok ? 200 : 503, h);
       }
       case "/snapshot":
-        return json(res, 200, { ...(e.snapshot() as object), visitors: { total: e.visitors.total, watching: e.bus.subscribers }, update: e.update?.() ?? null });
+        return json(res, 200, { ...(e.snapshot() as object), visitors: { total: e.visitors.total, watching: e.bus.subscribers }, update: e.update?.() ?? null, ...(deps.keeper ? { keeper: deps.keeper.publicState() } : {}) });
       case "/visit": {
         const total = e.visitors.visit(clientAddr(req.headers["x-forwarded-for"], req.socket.remoteAddress));
         return json(res, 200, { total, watching: e.bus.subscribers });

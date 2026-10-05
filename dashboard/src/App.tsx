@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BeeColumn, money } from "./BeeColumn";
+import { Beekeeper } from "./Beekeeper";
 import { Header } from "./Header";
 import { unlockAudio } from "./sound";
 import { Ticker } from "./Ticker";
@@ -72,6 +73,7 @@ export function App() {
           );
         })}
         <aside className="rail">
+          <Beekeeper keeper={feed.snap?.keeper} />
           <section className="rail-card board">
             <div className="rail-head">
               <span className="eyebrow">Leaderboard</span>
@@ -109,7 +111,7 @@ export function App() {
         </aside>
       </main>
       <Trades trades={trades} bees={feed.bees} now={Date.now()} />
-      <Toasts toasts={feed.toasts} />
+      <Toasts toasts={feed.toasts} keeper={feed.keeperToasts} />
     </div>
   );
 }

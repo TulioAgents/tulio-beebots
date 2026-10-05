@@ -121,6 +121,8 @@ export interface HiveOpts {
   db: Pick<Db, "hiveFills">;
   /** The owner password's scrypt hash (Setup, or OWNER_PASSWORD), null when none is set. */
   ownerPasswordHash: () => string | null;
+  /** The owner password gate, when it is shared with other owner actions (so wrong tries count once). */
+  gate?: PasswordGate;
   /** File path of a bee's painted portrait (a JPEG from Setup), or null. Uploaded so the board shows it. */
   portrait?: (slot: string) => string | null;
   /** Injectable for tests. */
@@ -147,7 +149,7 @@ export class Hive {
 
   constructor(private o: HiveOpts) {
     this.state = loadHive(o.path);
-    this.gate = new PasswordGate("x-owner-password", o.ownerPasswordHash, "owner password");
+    this.gate = o.gate ?? new PasswordGate("x-owner-password", o.ownerPasswordHash, "owner password");
     this.fetch = o.fetch ?? fetch;
     this.now = o.now ?? Date.now;
   }

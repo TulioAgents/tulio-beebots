@@ -42,6 +42,14 @@ services:
       UPDATE_CHECK: ${UPDATE_CHECK:-true}
       # The Hive, the public paper-trading leaderboard. Only used if you join (Setup or the dashboard).
       HIVE_URL: ${HIVE_URL:-https://beebots.tech}
+      # The Beekeeper (optional, docs/BEEKEEPER.md). Normally connected from the dashboard; anything set here wins.
+      BEEKEEPER_WEBHOOK_URL: ${BEEKEEPER_WEBHOOK_URL:-}
+      BEEKEEPER_EVERY_HOURS: ${BEEKEEPER_EVERY_HOURS:-}
+      BEEKEEPER_RAMP_START: ${BEEKEEPER_RAMP_START:-}
+      # Where the Beekeeper's Zap finds this server. Blank = https://<PUBLIC_DOMAIN>, or the address you connected from.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+      LAB_SECRET: ${LAB_SECRET:-}
       # Per-bee OKX keys, for demo or live only (letters: BEE1, BEE2, BEE3).
       BEE1_OKX_DEMO_API_KEY: ${BEE1_OKX_DEMO_API_KEY:-}
       BEE1_OKX_DEMO_API_SECRET: ${BEE1_OKX_DEMO_API_SECRET:-}
