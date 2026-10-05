@@ -374,7 +374,7 @@ describe("beekeep: reading what the CLI wrote", () => {
 
   it("believes the envelope's own verdict over its exit code, in both directions", () => {
     // says it failed, exited cleanly
-    expect(readCliResult(envelope({ is_error: true }), null)).toEqual({ ok: false, reason: "the CLI reported an error" });
+    expect(readCliResult(envelope({ is_error: true }), null)).toMatchObject({ ok: false, reason: expect.stringContaining("the CLI reported an error") });
     // says it is fine, exited badly
     expect(readCliResult(envelope(), died({ code: 143 })).ok).toBe(true);
   });
@@ -398,6 +398,17 @@ describe("beekeep: reading what the CLI wrote", () => {
     if (r.ok) throw new Error("expected a failure");
     expect(r.reason.length).toBeLessThan(300);
     expect(r.reason).not.toContain("--json-schema");
+  });
+
+  it("carries the CLI's own words about its failure, so the reason is actionable", () => {
+    const r = readCliResult(envelope({ is_error: true, subtype: "error_max_turns", result: "ran out of turns before answering" }), null);
+    if (r.ok) throw new Error("expected a failure");
+    expect(r.reason).toContain("error_max_turns");
+    expect(r.reason).toContain("ran out of turns");
+    // model prose, so it is bounded like any other untrusted text
+    const long = readCliResult(envelope({ is_error: true, result: "z".repeat(5000) }), null);
+    if (long.ok) throw new Error("expected a failure");
+    expect(long.reason.length).toBeLessThan(300);
   });
 
   it("is not fooled by stdout that parses but is not an object", () => {

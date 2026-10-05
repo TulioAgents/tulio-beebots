@@ -99,19 +99,27 @@ export interface CliFailure {
  * only explains a stdout that cannot be used.
  */
 export function readCliResult(stdout: string, failure: CliFailure | null): { ok: true; output: unknown } | { ok: false; reason: string } {
-  let env: { structured_output?: unknown; is_error?: boolean; permission_denials?: unknown[] } | undefined;
+  let env: { structured_output?: unknown; is_error?: boolean; permission_denials?: unknown[]; result?: unknown; subtype?: unknown } | undefined;
   try {
     const parsed: unknown = JSON.parse(stdout);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) env = parsed as typeof env;
   } catch {
     env = undefined;
   }
-  // The CLI's own verdict on itself outranks its exit code, in both directions.
-  if (env?.is_error) return { ok: false, reason: "the CLI reported an error" };
+  // The CLI's own verdict on itself outranks its exit code, in both directions. Its own words come with it:
+  // "the CLI reported an error" on its own sends the operator to the CLI's logs to find out what happened.
+  if (env?.is_error) return { ok: false, reason: `the CLI reported an error${said(env.subtype, env.result)}` };
   if (env?.permission_denials?.length) return { ok: false, reason: "the CLI tried to use a capability it was not given" };
   if (env && env.structured_output !== undefined && env.structured_output !== null) return { ok: true, output: env.structured_output };
   if (failure) return { ok: false, reason: describeCliFailure(failure) };
   return { ok: false, reason: env ? "the CLI returned no usable rules" : "the CLI did not return JSON" };
+}
+
+/** What the CLI said about its own failure, trimmed to fit a record line. Model prose, so it is data, never read as instruction. */
+function said(subtype: unknown, result: unknown): string {
+  const parts = [typeof subtype === "string" ? subtype : "", typeof result === "string" ? result : ""].filter(Boolean);
+  const text = parts.join(": ").replace(/\s+/g, " ").trim().slice(0, 200);
+  return text ? ` (${text})` : "";
 }
 
 /** A reason short enough to read in a record file, instead of the whole command line and the schema with it. */

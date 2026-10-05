@@ -153,7 +153,11 @@ function writeRules(prompt: string): Promise<unknown> {
     execFile(
       cfg.cli,
       args,
-      { timeout: cfg.cliTimeoutMs, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } },
+      // A minimal environment, so nothing in this process's env reaches a local agent holding untrusted Hive
+      // text. USER is in it because the CLI resolves its own credentials through it: verified on claude
+      // 2.1.263, PATH and HOME alone answer "Not logged in · Please run /login" and spend nothing, which a
+      // round then reports as a CLI that failed. It is a username, not a secret.
+      { timeout: cfg.cliTimeoutMs, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", USER: process.env.USER ?? "" } },
       (err, stdout, stderr) => {
         // stdout is read first: the CLI writes a complete envelope and still exits non-zero often enough that
         // trusting the exit code loses good rewrites. `err` only explains a stdout that cannot be used.
