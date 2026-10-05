@@ -2,6 +2,7 @@
 // owner's rules for Jev, and its coin list narrows the bee further. It is applied through the same wrapper as the
 // owner's own rules and coins (bees/custom.ts), so it can only ever reach the strategy text and the coin list:
 // never leverage, stops, sizing, caps, the loss stop, retirement, the live ramp or the mode.
+import { createHash } from "node:crypto";
 import { BIZZY_BREAKOUT_COINS } from "../bees/bizzy.js";
 import { BREEZY_COINS } from "../bees/breezy.js";
 import type { StyleId } from "../settings.js";
@@ -30,6 +31,17 @@ export function effectiveCoins(style: StyleId, ownerCoins: string[], coins: stri
   const styleList = STYLE_COINS[style];
   const owner = tidy(ownerCoins);
   return tidy(coins).filter((c) => (!styleList || styleList.includes(c)) && (!owner.length || owner.includes(c)));
+}
+
+/**
+ * A ruleset's identity: the first 16 hex of sha256 over the composed strategy string (beekeeper-audit-log R-1.1).
+ *
+ * Lives here, with the two pure functions that build that string, so the engine's stamp (engine.ts, which memoises
+ * this per brain) and anyone asking "what version would these rules produce" are byte for byte the same value. Two
+ * copies would drift silently and every figure in `make rules-report` would stop joining.
+ */
+export function rulesVersion(strategy: string): string {
+  return createHash("sha256").update(strategy).digest("hex").slice(0, 16);
 }
 
 /** The rules and coins a bee trades on right now: the owner's, or the Beekeeper's while an overlay is live. */

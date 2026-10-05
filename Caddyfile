@@ -41,12 +41,16 @@
 		reverse_proxy engine:8080
 	}
 
-	# The Beekeeper (docs/BEEKEEPER.md). /keeper/* are the owner's controls: the engine needs the owner password for
+	# The Beekeeper (docs/BEEKEEPER.md). These four are the owner's controls: the engine needs the owner password for
 	# each. /lab/* is where the Zap delivers a rewrite: the engine needs a 15-minute round key, and only accepts a
 	# bee's rules text and coin list.
+	#
+	# Listed one by one rather than /keeper/*: POST /keeper/ruleset-version answers before the password gate
+	# (src/keeper-http.ts:202), because the local coach asks it over loopback on this host. A wildcard here would
+	# publish it, handing anyone a hash oracle over a bee's composed strategy text for nothing in return.
 	@keeper {
 		method POST
-		path /keeper/* /lab/*
+		path /keeper/connect /keeper/disconnect /keeper/round /keeper/rollback /lab/*
 	}
 	handle @keeper {
 		request_body {

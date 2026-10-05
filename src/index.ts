@@ -223,7 +223,7 @@ async function main() {
   });
   const keeperTimer = setInterval(() => keeper.tick(), 15_000);
   log.info("beekeeper", { on: keeper.enabled, everyHours: keeper.everyHours(), rewritesLive: BEES.filter((b) => labStore.overlay(b) !== null).length });
-  const keeperHttp = new KeeperHttp({ keeper, settings: keeperSettings, door, gate: ownerGate, name: (id) => cfg.slots[id].name });
+  const keeperHttp = new KeeperHttp({ keeper, settings: keeperSettings, door, gate: ownerGate, name: (id) => cfg.slots[id].name, slot: (id) => cfg.slots[id], overlay: (id) => labStore.overlay(id) });
 
   // "Update available" on the dashboard (checks GitHub Releases; never installs anything).
   const updates = new UpdateCheck({ repo: cfg.update.repo, current: cfg.update.version, enabled: cfg.update.enabled });

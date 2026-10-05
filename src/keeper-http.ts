@@ -3,6 +3,8 @@
 // owner connects from the dashboard. Anything set in the environment wins over the file.
 // Routes:
 //   GET  /keeper/scorecard    public: what the Zap reads before a round (data that is public already, 10 s cache)
+//   POST /keeper/ruleset-version  public: { bee, rules, coins } -> the ruleset version that bee runs now and the one
+//                             those rules would produce. Read-only: it installs nothing and records nothing.
 //   POST /keeper/connect      owner password: { hookUrl, publicUrl }, takes effect without a restart
 //   POST /keeper/disconnect   owner password: no more rounds (rewrites already made stay until undone)
 //   POST /keeper/round        owner password: start a round now
@@ -12,9 +14,12 @@ import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { customBrain } from "./bees/custom.js";
+import { BRAINS } from "./bees/index.js";
 import { BEES, originOf, type BeeId } from "./config.js";
 import { readJson, send, type PasswordGate } from "./gate.js";
 import { KEEPER_DEFAULT_EVERY_HOURS, parseRampStart, type Keeper, type KeeperConfig } from "./keeper.js";
+import { liveRules, rulesVersion, type OwnerRules } from "./lab/brain.js";
 import type { LabDoor } from "./lab/door.js";
 import { log } from "./log.js";
 import { redact, safeError } from "./redact.js";
@@ -131,6 +136,9 @@ export class KeeperSettings {
 
 const ConnectReq = z.object({ hookUrl: z.string().max(500), publicUrl: z.string().max(200).optional() }).strict();
 const RollbackReq = z.object({ bee: z.enum(BEES) }).strict();
+// The same three fields the door's own overlay schema calls rules and coins, so a caller can ask about exactly what
+// it is about to deliver. Bounds are the door's too (lab/door.ts): the 16 KiB body cap does the rest.
+const VersionReq = z.object({ bee: z.enum(BEES), rules: z.string(), coins: z.array(z.string()).max(20) }).strict();
 
 export interface KeeperHttpDeps {
   keeper: Keeper;
@@ -139,6 +147,10 @@ export interface KeeperHttpDeps {
   /** The owner password gate, shared with the Hive's join and leave so wrong tries count once. */
   gate: PasswordGate;
   name: (bee: BeeId) => string;
+  /** The bee as Setup left it: the half of the composed strategy no caller of /keeper/ruleset-version can know. */
+  slot: (bee: BeeId) => OwnerRules;
+  /** The Beekeeper's rewrite in force for that bee, or null when it is on its owner's own rules. */
+  overlay: (bee: BeeId) => { rules: string; coins: string[] } | null;
   now?: () => number;
 }
 
@@ -186,6 +198,23 @@ export class KeeperHttp {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "access-control-allow-origin": "*" });
       res.end(this.scorecardCache.body);
       return true;
+    }
+    if (path === "/keeper/ruleset-version") {
+      if (req.method !== "POST") return this.reply(res, 405, { error: "method not allowed" });
+      let raw: unknown;
+      try {
+        raw = await readJson(req, MAX_BODY);
+      } catch {
+        return this.reply(res, 400, { error: "bad request" });
+      }
+      const p = VersionReq.safeParse(raw);
+      if (!p.success) return this.reply(res, 400, { error: "Name the bee (bee1, bee2 or bee3), the rules text and the coin list." });
+      const slot = this.d.slot(p.data.bee);
+      // The version a rewrite of this bee would replace, and the one it would install (or would have installed, for a
+      // round that is recorded but never delivered). `liveRules` and `customBrain` are pure and the hash is the one the
+      // engine stamps with, so this answers for a ruleset without installing it, rebuilding a brain or writing a row.
+      const version = (o: { rules: string; coins: string[] } | null) => rulesVersion(customBrain(BRAINS[slot.style], liveRules(slot, o)).strategy);
+      return this.reply(res, 200, { current: version(this.d.overlay(p.data.bee)), next: version(p.data) });
     }
     if (!OWNER_ROUTES.has(path)) return false;
     if (req.method !== "POST") return this.reply(res, 405, { error: "method not allowed" });

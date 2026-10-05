@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
 import { customBrain } from "./bees/custom.js";
 import { BRAINS } from "./bees/index.js";
 import { maxNotionalUsd, minutesSince, positionNotional, profitLockStop } from "./bees/common.js";
 import { coinOf, type Action, type BeeBrain, type BeeContext, type BeeState, type Position, type Side } from "./bees/types.js";
 import { BEES, type BeeId, type Config } from "./config.js";
-import { liveRules } from "./lab/brain.js";
+import { liveRules, rulesVersion } from "./lab/brain.js";
 import type { Overlay } from "./lab/store.js";
 import type { Alerts } from "./alerts.js";
 import type { Db } from "./db.js";
@@ -30,18 +29,20 @@ const EQUITY_SNAPSHOT_MS = 10_000;
 const DECISION_STATE_KEEP_MS = 14 * 86_400_000;
 
 /**
- * Which ruleset produced a decision. The id is sha256 of the composed strategy string, so it moves whenever
- * the text Jev actually sees moves: a Beekeeper overlay, or the owner editing rules in Setup.
+ * Which ruleset produced a decision. The id is sha256 of the composed strategy string (`rulesVersion`, shared with
+ * everyone else who needs that number), so it moves whenever the text Jev actually sees moves: a Beekeeper overlay,
+ * or the owner editing rules in Setup.
  *
  * Keyed on the brain object, which the engine caches and only replaces on a rebuild (see `brain()`), so this
  * hashes once per rules change rather than once per decision. Deliberately NOT inside `brain()`: that is on
- * the path to stopFor/trail, and audit bookkeeping must never be able to throw there.
+ * the path to stopFor/trail, and audit bookkeeping must never be able to throw there. Only a brain the engine
+ * really runs belongs in here: a hypothetical ruleset must go to `rulesVersion` directly.
  */
 const RULES_VERSIONS = new WeakMap<BeeBrain, string>();
 function rulesVersionOf(brain: BeeBrain): string {
   let v = RULES_VERSIONS.get(brain);
   if (v === undefined) {
-    v = createHash("sha256").update(brain.strategy).digest("hex").slice(0, 16);
+    v = rulesVersion(brain.strategy);
     RULES_VERSIONS.set(brain, v);
   }
   return v;

@@ -4,18 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Alerts } from "../src/alerts.js";
 import { ConfigError, loadConfig, originOf, type BeeId } from "../src/config.js";
 import { Db } from "../src/db.js";
+import { Engine } from "../src/engine.js";
 import { EventBus } from "../src/events.js";
+import { SimExecutor } from "../src/exec/executor.js";
 import { hashPassword, PasswordGate } from "../src/gate.js";
 import { Hive } from "../src/hive.js";
+import { Jev, type SystemOne } from "../src/jev.js";
 import { Keeper } from "../src/keeper.js";
 import { isPrivateAddress, KeeperHttp, keeperPath, KeeperSettings, parseHookUrl, parsePublicUrl } from "../src/keeper-http.js";
 import { effectiveCoins, liveRules, type OwnerRules } from "../src/lab/brain.js";
 import { LAB_MIN_INTERVAL_MS, LabDoor, labSignature } from "../src/lab/door.js";
 import { LabStore } from "../src/lab/store.js";
+import type { MarketFeed } from "../src/market/data.js";
 import { startServer } from "../src/server.js";
 import { Visitors } from "../src/visitors.js";
+import { coin, NOW, testConfig, trend, view } from "./fixtures.js";
 
 const PASSWORD = "correct horse";
 const HASH = hashPassword(PASSWORD);
@@ -64,7 +70,7 @@ async function rig(opts: { hash?: string | null; env?: ConstructorParameters<typ
   const door = new LabDoor({ store, rounds: keeper, knownCoins: () => ["BTC", "ETH", "SOL"], effectiveCoins: (id, coins) => effectiveCoins(SLOTS[id].style, SLOTS[id].coins, coins) });
   const hash = opts.hash === undefined ? HASH : opts.hash;
   const gate = new PasswordGate("x-owner-password", () => hash, "owner password");
-  const http = new KeeperHttp({ keeper, settings, door, gate, name: (id) => SLOTS[id].name });
+  const http = new KeeperHttp({ keeper, settings, door, gate, name: (id) => SLOTS[id].name, slot: (id) => SLOTS[id], overlay: (id) => store.overlay(id) });
   const hive = opts.hive
     ? new Hive({ path: join(dir, "hive.json"), url: "https://hive.test", mode: "dry", source: () => ({ startedAt: 0, startEquityUsd: 333, bees: [] }), db, ownerPasswordHash: () => hash, gate, fetch: (async () => new Response("{}")) as unknown as typeof fetch })
     : undefined;
@@ -313,6 +319,140 @@ describe("beekeeper routes: the scorecard", () => {
     expect((await r.get("/keeper/nope")).status).toBe(404);
     expect((await r.post("/keeper/nope")).status).toBe(404);
     expect((await r.post("/keeper/scorecard")).status).toBe(405);
+  });
+});
+
+/**
+ * A real engine and the Beekeeper's routes over one database, so the preview can be held against the version the
+ * engine actually stamps on a decision row. The routes are given the engine's own slots and overlay store, as
+ * src/index.ts does. The fake Jev always answers off-menu, so a tick records decisions without trading.
+ */
+async function engineRig() {
+  const cfg = testConfig({ DRY_RUN: "true" });
+  cfg.slots.bee3 = { ...cfg.slots.bee3, rules: "Chase the loudest coin, but never anything that fell this week.", coins: [] };
+  const db = new Db(":memory:");
+  const store = new LabStore(db);
+  const bus = new EventBus(db);
+  const v = view([
+    coin("BTC", { trend: trend({ score: 6 }), ret24hPct: 2, ret7dPct: 5, breakout: { dayOpen: 80000, prevRange: 2000, trigger: 81000 } }, 80000),
+    coin("ETH", { trend: trend({ score: -4 }), ret24hPct: -1, ret7dPct: -3 }, 2700),
+    coin("SOL", { breakout: { dayOpen: 100, prevRange: 4, trigger: 102 }, ret24hPct: 6, ret7dPct: 12 }, 102.5),
+    coin("PENGU", { ret24hPct: 15, ret7dPct: 30, volZ: 3 }),
+    coin("DOGE", { ret24hPct: 4, ret7dPct: 9 }),
+  ]);
+  const feed = { view: () => v, refresh: async () => {}, refreshTickers: async () => {}, lastRefreshAt: NOW } as unknown as MarketFeed;
+  const client: SystemOne = {
+    async systemOne() {
+      return { model: "fake", usage: { input_tokens: 100, output_tokens: 0 }, answers: { action: { type: "choice", choice: "NOT_ON_MENU", confidence: 1, probabilities: {} }, conviction: { type: "score", score: 1, confidence: 1, legend: {}, probabilities: {} } } } as never;
+    },
+  };
+  const engine = new Engine({
+    cfg,
+    db,
+    feed,
+    jev: new Jev({ ...cfg.jev, client, now: () => NOW }),
+    exec: new SimExecutor(() => v, cfg.risk.takerFeeRate),
+    bus,
+    alerts: new Alerts(undefined),
+    now: () => NOW,
+    lab: store,
+  });
+  await engine.start();
+  engine.stop(); // ticks are driven by hand below
+
+  const settings = new KeeperSettings(keeperPath(join(mkdtempSync(join(tmpdir(), "bees-keeper-")), "settings.json")));
+  const keeper = new Keeper({
+    db,
+    bus,
+    config: () => settings.config,
+    bee: (id) => ({ name: cfg.slots[id].name, styleLabel: cfg.slots[id].style, ...liveRules(cfg.slots[id], store.overlay(id)), ownerCoins: cfg.slots[id].coins }),
+    lockedUntil: () => null,
+    snapshot: () => engine.snapshot(),
+    fetch: (async () => ({ ok: true, status: 200 })) as unknown as typeof fetch,
+  });
+  const door = new LabDoor({ store, rounds: keeper, knownCoins: () => ["BTC", "ETH", "SOL"], effectiveCoins: (id, coins) => effectiveCoins(cfg.slots[id].style, cfg.slots[id].coins, coins) });
+  const gate = new PasswordGate("x-owner-password", () => HASH, "owner password");
+  const http = new KeeperHttp({ keeper, settings, door, gate, name: (id) => cfg.slots[id].name, slot: (id) => cfg.slots[id], overlay: (id) => store.overlay(id) });
+  const srv = startServer({ engine: { bus, db, visitors: new Visitors(db), snapshot: () => engine.snapshot(), health: () => engine.health() }, keeper: http, lab: door, profile: () => ({ bees: [] }), beeImage: () => null }, 0, "127.0.0.1");
+  await new Promise((r) => srv.once("listening", r));
+  close = () => srv.close();
+  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+
+  /** No owner password: this route is public, like the scorecard next to it. */
+  const preview = async (body: unknown, password: string | null = null) => {
+    const res = await fetch(`${base}/keeper/ruleset-version`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(password === null ? {} : { "x-owner-password": encodeURIComponent(password) }) },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+    return { status: res.status, body: (await res.json()) as { current?: string; next?: string; error?: string } };
+  };
+  const get = async (p: string) => (await fetch(`${base}${p}`)).status;
+  /** The ruleset the engine stamped on that bee's latest decision. */
+  const stamp = (bee: BeeId) => (db.raw.prepare(`SELECT rules_version AS v FROM decisions WHERE bee = ? ORDER BY id DESC LIMIT 1`).get(bee) as { v: string | null }).v;
+  /** Everything the preview must leave alone. */
+  const state = (bee: BeeId) => ({
+    rulesets: db.raw.prepare(`SELECT version, bee, strategy FROM rulesets ORDER BY version`).all(),
+    decisions: db.raw.prepare(`SELECT bee, rules_version AS v, overlay_id AS o FROM decisions ORDER BY id`).all(),
+    overlay: store.overlay(bee),
+    live: liveRules(cfg.slots[bee], store.overlay(bee)),
+  });
+  return { engine, store, preview, get, stamp, state };
+}
+
+describe("beekeeper routes: the ruleset-version preview", () => {
+  it("answers with the version the engine stamps now, and the one it stamps once those rules land for real", async () => {
+    const r = await engineRig();
+    await r.engine.tick();
+
+    const p = await r.preview({ bee: "bee3", rules: RULES, coins: ["BTC"] });
+    expect(p.status).toBe(200);
+    expect(p.body.current).toBe(r.stamp("bee3"));
+    expect(p.body.next).toMatch(/^[0-9a-f]{16}$/);
+    expect(p.body.next).not.toBe(p.body.current);
+
+    // the very same rules, landed for real: the engine's own stamp must be the version the preview promised
+    r.store.set("bee3", RULES, ["BTC"], "for real", undefined, NOW);
+    await r.engine.tick();
+    expect(r.stamp("bee3")).toBe(p.body.next);
+    // and the other bees are unmoved by any of it
+    expect((await r.preview({ bee: "bee1", rules: RULES, coins: [] })).body.current).toBe(r.stamp("bee1"));
+  });
+
+  it("changes nothing: no ruleset row, no decision row, and the bee's live rules are untouched", async () => {
+    const r = await engineRig();
+    await r.engine.tick();
+    const before = r.state("bee2");
+
+    expect((await r.preview({ bee: "bee2", rules: RULES, coins: ["BTC"] })).status).toBe(200);
+    expect((await r.preview({ bee: "bee2", rules: "Only RIDE, never DOUBLE_DOWN, and never after a red day.", coins: [] })).status).toBe(200);
+
+    expect(r.state("bee2")).toEqual(before);
+    expect(r.store.overlay("bee2")).toBeNull();
+  });
+
+  it("does not change what the engine stamps next: the hypothetical brain never reaches the engine's cache", async () => {
+    const r = await engineRig();
+    await r.engine.tick();
+    const first = r.stamp("bee1");
+
+    for (const rules of [RULES, "Only RIDE, never DOUBLE_DOWN, and never after a red day."]) {
+      expect((await r.preview({ bee: "bee1", rules, coins: ["BTC"] })).status).toBe(200);
+    }
+    await r.engine.tick();
+    expect(r.stamp("bee1")).toBe(first);
+  });
+
+  it("an unknown bee, rules that are not text and coins that are not a list are all 4xx, never a 500", async () => {
+    const r = await engineRig();
+    for (const body of [{}, { bee: "bee4", rules: RULES, coins: [] }, { bee: "bee1", rules: 42, coins: [] }, { bee: "bee1", rules: RULES, coins: "BTC" }, { bee: "bee1", rules: RULES, coins: new Array(21).fill("BTC") }, { bee: "bee1", rules: RULES, coins: [], reason: "not a field here" }, "{not json", { bee: "bee1", rules: RULES, coins: [], pad: "x".repeat(17 * 1024) }]) {
+      const res = await r.preview(body);
+      expect(res.status).toBe(400);
+      expect(res.body.current).toBeUndefined();
+    }
+    expect(await r.get("/keeper/ruleset-version")).toBe(405);
+    // public, like the scorecard: a wrong owner password is not even looked at
+    expect((await r.preview({ bee: "bee1", rules: RULES, coins: [] }, "wrong horse!")).status).toBe(200);
   });
 });
 

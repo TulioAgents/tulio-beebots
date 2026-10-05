@@ -1,7 +1,8 @@
 // Read-only HTTP: GET /events (SSE), /snapshot, /history?n=, /equity?days=, /visit, /health, /profile, /bee-image/<bee>.
 // Never config or keys. The exceptions: /setup/*, which only exists before first-run Setup is done (setup.ts), and
 // POST /hive/join and /hive/leave, which need the owner password (gate.ts, hive.ts). GET /hive/status is public and holds no key.
-// The Beekeeper (keeper.ts, docs/BEEKEEPER.md): GET /keeper/scorecard is public; POST /keeper/connect, /keeper/disconnect,
+// The Beekeeper (keeper.ts, docs/BEEKEEPER.md): GET /keeper/scorecard and POST /keeper/ruleset-version (which only
+// hashes text, changing nothing) are public; POST /keeper/connect, /keeper/disconnect,
 // /keeper/round and /keeper/rollback need the owner password (keeper-http.ts); POST /lab/overlay needs a round key
 // (lab/door.ts) and can only change one bee's rules text and coin list.
 // /visit is the page's hit counter: it bumps a total and returns it (see visitors.ts; no IP is stored or logged).
