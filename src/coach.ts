@@ -80,6 +80,47 @@ export const WrittenRules = z.object({
 });
 export type WrittenRules = z.infer<typeof WrittenRules>;
 
+/** How the CLI process ended, when it ended badly. `stderr` must already be redacted by the caller. */
+export interface CliFailure {
+  code: number | null;
+  signal: string | null;
+  /** The timeout killed it. */
+  killed: boolean;
+  stderr: string;
+}
+
+/**
+ * What the CLI's `--output-format json` envelope actually says, read before its exit code.
+ *
+ * Verified against claude 2.1.263: it can write a complete envelope — `is_error` false, no denials, every
+ * declared field present — and still exit non-zero. Treating a non-zero exit as the answer threw away a good
+ * rewrite and reported a kilobyte of command line in place of a reason. The exit code is not part of R-4.6,
+ * which is about output that is absent, unparseable or short a field; so stdout is the authority, and the exit
+ * only explains a stdout that cannot be used.
+ */
+export function readCliResult(stdout: string, failure: CliFailure | null): { ok: true; output: unknown } | { ok: false; reason: string } {
+  let env: { structured_output?: unknown; is_error?: boolean; permission_denials?: unknown[] } | undefined;
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) env = parsed as typeof env;
+  } catch {
+    env = undefined;
+  }
+  // The CLI's own verdict on itself outranks its exit code, in both directions.
+  if (env?.is_error) return { ok: false, reason: "the CLI reported an error" };
+  if (env?.permission_denials?.length) return { ok: false, reason: "the CLI tried to use a capability it was not given" };
+  if (env && env.structured_output !== undefined && env.structured_output !== null) return { ok: true, output: env.structured_output };
+  if (failure) return { ok: false, reason: describeCliFailure(failure) };
+  return { ok: false, reason: env ? "the CLI returned no usable rules" : "the CLI did not return JSON" };
+}
+
+/** A reason short enough to read in a record file, instead of the whole command line and the schema with it. */
+function describeCliFailure(f: CliFailure): string {
+  const how = f.killed ? "did not answer within its timeout" : f.signal ? `was killed by ${f.signal}` : f.code === null ? "ended without a status" : `exited ${f.code}`;
+  const tail = f.stderr.replace(/\s+/g, " ").trim().slice(0, 200);
+  return `the CLI ${how} and wrote no usable output${tail ? `: ${tail}` : ""}`;
+}
+
 export type Arm = "delivered" | "withheld";
 
 // The ruleset version a rewrite replaced and the one it installed (R-9.3) — for a withheld round, the one it

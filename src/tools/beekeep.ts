@@ -13,8 +13,8 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, runRound, shouldAlertOnThisFailure, type Outcome, type RoundRecord, type Scorecard, type Verdict } from "../coach.js";
-import { redact, safeError } from "../redact.js";
+import { asTrigger, CoachConfig, configProblems, preflightFailure, readCliResult, roundRecord, runRound, shouldAlertOnThisFailure, type Outcome, type RoundRecord, type Scorecard, type Verdict } from "../coach.js";
+import { redact, redactString, safeError } from "../redact.js";
 
 const argv = process.argv.slice(2);
 const flag = (n: string) => {
@@ -154,19 +154,13 @@ function writeRules(prompt: string): Promise<unknown> {
       cfg.cli,
       args,
       { timeout: cfg.cliTimeoutMs, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } },
-      (err, stdout) => {
-        if (err) return reject(new Error(safeError(err).message));
-        let env: { structured_output?: unknown; is_error?: boolean; permission_denials?: unknown[] };
-        try {
-          env = JSON.parse(stdout) as typeof env;
-        } catch {
-          return reject(new Error("the CLI did not return JSON"));
-        }
-        if (env.is_error) return reject(new Error("the CLI reported an error"));
-        if (env.permission_denials?.length) return reject(new Error("the CLI tried to use a capability it was not given"));
-        const o = env.structured_output;
-        if (!o) return reject(new Error("the CLI returned no usable rules"));
-        resolve(o);
+      (err, stdout, stderr) => {
+        // stdout is read first: the CLI writes a complete envelope and still exits non-zero often enough that
+        // trusting the exit code loses good rewrites. `err` only explains a stdout that cannot be used.
+        const e = err as (Error & { code?: number | null; signal?: string | null; killed?: boolean }) | null;
+        const failure = e ? { code: e.code ?? null, signal: e.signal ?? null, killed: e.killed === true, stderr: redactString(stderr) } : null;
+        const read = readCliResult(stdout, failure);
+        return read.ok ? resolve(read.output) : reject(new Error(read.reason));
       },
     );
   });

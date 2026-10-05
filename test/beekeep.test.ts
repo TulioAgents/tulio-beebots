@@ -3,7 +3,7 @@
 // inside src/tools/beekeep.ts where nothing can reach them.
 // See docs/ears/local-beekeeper.md units 1 and 9.
 import { describe, expect, it } from "vitest";
-import { asTrigger, CoachConfig, configProblems, preflightFailure, roundRecord, shouldAlertOnFailures, shouldAlertOnThisFailure, type Outcome, type PreflightInputs, type RoundRecord, type Verdict, type WrittenRules } from "../src/coach.js";
+import { asTrigger, CoachConfig, configProblems, preflightFailure, readCliResult, roundRecord, shouldAlertOnFailures, shouldAlertOnThisFailure, type Outcome, type PreflightInputs, type RoundRecord, type Verdict, type WrittenRules } from "../src/coach.js";
 
 // The real thing is 48 hex characters, which is also exactly what the redactor reads as a secret.
 const LAB_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -356,5 +356,53 @@ describe("beekeep: the alert raised by the round that could not run", () => {
     const json = JSON.stringify(record(preflight({ labSecret: LAB_SECRET.slice(0, 20) })));
     expect(json).not.toContain(LAB_SECRET.slice(0, 8));
     expect(json).not.toMatch(/[0-9a-fA-F]{32,}/);
+  });
+});
+
+// What the rules-writing CLI really does, as opposed to what its exit code claims. Verified against claude
+// 2.1.263: a complete envelope and a non-zero exit arrive together often enough that reading the code first
+// loses good rewrites. See docs/ears/local-beekeeper.md R-4.6.
+describe("beekeep: reading what the CLI wrote", () => {
+  const SIX = { idea: "i", rules: "r", coins: "BTC", reason: "because", quip: "q", note: "n" };
+  const envelope = (over: Record<string, unknown> = {}) => JSON.stringify({ is_error: false, permission_denials: [], structured_output: SIX, ...over });
+  const died = (over: Partial<{ code: number | null; signal: string | null; killed: boolean; stderr: string }> = {}) => ({ code: 1, signal: null, killed: false, stderr: "", ...over });
+
+  it("takes the rules from a complete envelope even when the CLI exited non-zero", () => {
+    const r = readCliResult(envelope(), died({ code: 1 }));
+    expect(r).toEqual({ ok: true, output: SIX });
+  });
+
+  it("believes the envelope's own verdict over its exit code, in both directions", () => {
+    // says it failed, exited cleanly
+    expect(readCliResult(envelope({ is_error: true }), null)).toEqual({ ok: false, reason: "the CLI reported an error" });
+    // says it is fine, exited badly
+    expect(readCliResult(envelope(), died({ code: 143 })).ok).toBe(true);
+  });
+
+  it("refuses an answer from a run that used a capability it was not given (R-4.3, R-4.5)", () => {
+    const r = readCliResult(envelope({ permission_denials: [{ tool: "Bash" }] }), null);
+    expect(r).toEqual({ ok: false, reason: "the CLI tried to use a capability it was not given" });
+  });
+
+  it("tells a timeout apart from a crash apart from silence", () => {
+    expect(readCliResult("", died({ killed: true }))).toMatchObject({ ok: false, reason: expect.stringContaining("did not answer within its timeout") });
+    expect(readCliResult("", died({ code: 2 }))).toMatchObject({ ok: false, reason: expect.stringContaining("exited 2") });
+    expect(readCliResult("", died({ code: null, signal: "SIGKILL" }))).toMatchObject({ ok: false, reason: expect.stringContaining("SIGKILL") });
+    expect(readCliResult("not json at all", null)).toEqual({ ok: false, reason: "the CLI did not return JSON" });
+    expect(readCliResult(envelope({ structured_output: null }), null)).toEqual({ ok: false, reason: "the CLI returned no usable rules" });
+  });
+
+  it("keeps the reason short enough to read in a record file", () => {
+    // the bug this replaces reported the whole command line, schema included, as the reason
+    const r = readCliResult("", died({ code: 1, stderr: `x${"y".repeat(5000)}` }));
+    if (r.ok) throw new Error("expected a failure");
+    expect(r.reason.length).toBeLessThan(300);
+    expect(r.reason).not.toContain("--json-schema");
+  });
+
+  it("is not fooled by stdout that parses but is not an object", () => {
+    for (const s of ["[1,2]", '"a string"', "42", "null"]) {
+      expect(readCliResult(s, null)).toEqual({ ok: false, reason: "the CLI did not return JSON" });
+    }
   });
 });

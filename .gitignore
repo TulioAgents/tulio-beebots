@@ -4,6 +4,7 @@
 node_modules/
 dist/
 data/
+beekeeper/coach.json
 *.sqlite
 *.sqlite-*
 .DS_Store
