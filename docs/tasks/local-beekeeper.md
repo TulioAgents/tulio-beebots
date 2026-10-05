@@ -78,6 +78,10 @@
     looks exactly like a coach with nothing to say.
   - acceptance: R-9.4 — WHEN a configured number of consecutive rounds could not run, THE SYSTEM SHALL raise
     an alert. Pre-flight failures count toward `alertAfterFailures`; a quiet round does not.
+  - note: 1.1 made pre-flight failures countable but did not close R-9.4. The alert block sits after
+    `runRound` and the pre-flight path exits at `src/tools/beekeep.ts:63` before reaching it, so a persistent
+    cause writes N identical failed lines and never evaluates them. Routing that exit through the same check
+    is this story's work.
   - verify: a test seeds `alertAfterFailures` records of pre-flight failures and asserts the alert fires; a
     test interleaves one quiet round and asserts it does not; a test asserts the alert does not fire at
     `n - 1`.
@@ -85,9 +89,10 @@
 
 ## Unit 1: Round execution
 
-- [ ] 1.1 Record a round that ends before the round loop starts (deps: 0.1, 9.1, est: ~25m) (mutex: round-record)
+- [x] 1.1 Record a round that ends before the round loop starts (deps: 0.1, 9.1, est: ~25m) (mutex: round-record)
   - why: five `die()` paths (`src/tools/beekeep.ts:33,35,39,41,42`) end a round with stderr and an exit code
-    only — invalid config, `LAB_SECRET` missing or short, `TYPESAFE_API_KEY` missing, prompt file missing.
+    only — `LAB_SECRET` missing or short, `TYPESAFE_API_KEY` missing, prompt file missing. (This line first
+    listed invalid config among them, contradicting the acceptance below; the acceptance was right.)
     R-1.4 says "for any reason", and R-1.5's distinction between a round that chose to do nothing and one
     that could not run is unusable if the second kind is sometimes invisible. A missing config file is the
     honest exception: `recordFile` is defined inside it, so there is nowhere to write. The other four have
@@ -99,7 +104,7 @@
   - verify: a test per path asserts one `kind: "failed"` record with a reason naming the cause, and asserts
     exit 1 (R-1.2); a test asserts the `LAB_SECRET` path records nothing resembling the secret (R-1.6) and is
     never recorded as quiet (R-1.3).
-  - landed:
+  - landed: 87e9487 — src/coach.ts, src/tools/beekeep.ts, test/beekeep.test.ts, docs/lld/local-beekeeper.md, beekeeper/LOCAL.md
 
 ## Unit 7: Control arm
 
